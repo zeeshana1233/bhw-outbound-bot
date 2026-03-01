@@ -226,17 +226,21 @@ async function startScraperAndOutreachLoop() {
       }
     }
 
-    // ── Outreach ─────────────────────────────────────────────────────
-    // Even if scraper found nothing new, check DB for any previously
-    // qualified leads not yet contacted (e.g. after a restart).
-    const newQualified = newLeads.filter(t => t.qualified);
-    if (newQualified.length > 0) {
-      logger.info(`\n  📬  ${newQualified.length} newly qualified — starting outreach immediately`);
+    // ── Outreach DISABLED for 24h scraper stability test ─────────────
+    // Set SCRAPER_TEST_MODE=false in .env to re-enable comments + DMs.
+    const scraperTestMode = process.env.SCRAPER_TEST_MODE !== 'false';
+    if (scraperTestMode) {
+      const newQualified = newLeads.filter(t => t.qualified);
+      logger.info(`\n  🧪  SCRAPER TEST MODE — outreach skipped (${newQualified.length} qualified leads stored, no comments/DMs sent)`);
+    } else {
+      const newQualified = newLeads.filter(t => t.qualified);
+      if (newQualified.length > 0) {
+        logger.info(`\n  📬  ${newQualified.length} newly qualified — starting outreach immediately`);
+      }
+      await processQualifiedLeads().catch(err =>
+        logger.error(`Outreach error: ${err.message}`)
+      );
     }
-
-    await processQualifiedLeads().catch(err =>
-      logger.error(`Outreach error: ${err.message}`)
-    );
 
     // ── Schedule next tick ────────────────────────────────────────────
     logger.info(`\n  ⏰  Next scrape in ${nextMinStr} min (randomised ${Math.round(minMs/60000)}–${Math.round(maxMs/60000)} min window)`);
