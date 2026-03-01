@@ -43,10 +43,15 @@ const _messageListeners = [];
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildClient() {
+  // Prefer the Chrome exe path from env (required when running as a Windows service).
+  // Falls back to letting puppeteer-core auto-discover (works on local dev).
+  const chromePath = process.env.BHW_CHROME_PROFILE_PATH || null;
+
   const client = new Client({
     authStrategy: new LocalAuth({ dataPath: '.wwebjs_auth' }),
     puppeteer: {
       headless: true,
+      ...(chromePath ? { executablePath: chromePath } : {}),
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
