@@ -838,21 +838,23 @@ inbox-monitor reply received  →  auto-pause all pending for that conversation
 
 ### 🔮 Social Brain Module (Planned — not started)
 
-**Description:** A semantic retrieval layer that replaces the static `knowledge-base.json` approach for voice/style matching.
+**Description:** A semantic retrieval layer for the Community Commenter engine only — improves voice and style of organic BHW forum replies by injecting relevant past comment examples into the prompt.
 
-**Problem it solves:** The bot currently generates replies from tip-based rules. As we accumulate real post-reply pairs, we need a way to inject *actual examples of our voice* into prompts rather than abstract instructions. The full KB can't fit in a prompt — so we retrieve only the top 5 most relevant examples per request.
+**Scope:** ONLY `community-commenter.js`. DMs, follow-ups, hire-a-freelancer outreach comments, and conversation replies are **not affected**.
+
+**Problem it solves:** The community commenter currently generates replies from `knowledge-base.json` tips — which tell the LLM *what* to say but not *how Zeeshan says it*. Social Brain retrieves the 5 most semantically similar past community comments we've written and injects them as few-shot voice examples into the prompt.
 
 **How it works:**
-- Every past reply (or manually curated example) is embedded via `text-embedding-3-small` and stored in a Qdrant vector DB
-- When a new post arrives, it's embedded and searched against the KB — top 5 semantically similar post→reply pairs are returned
-- Those 5 examples are injected into the LLM prompt as few-shot context before generation
-- KB grows automatically as the bot sends live replies (nightly sync job)
+- Past community thread→comment pairs are embedded via `text-embedding-3-small` and stored in a Qdrant vector DB (collection: `community_comments`)
+- When the commenter finds a new BHW thread, it embeds the thread text and searches Qdrant — top 5 similar past pairs are returned
+- Those 5 examples are injected into `aiEngine.generateCommunityComment()` as few-shot context
+- KB grows automatically as the bot posts live community comments (nightly sync job reads the existing `community_comments` DB table)
 
-**Stack additions:** Qdrant (Docker), `@qdrant/js-client-rest`, `text-embedding-3-small`
+**Stack additions:** Qdrant (Docker, local), `@qdrant/js-client-rest`, `text-embedding-3-small`
 
-**Estimated effort:** 8–10 hours (bottleneck is collecting seed data)
+**Estimated effort:** 7–8 hours (bottleneck is writing 30 seed thread→comment pairs)
 
 **Full dev plan:** See [SOCIAL_BRAIN_PLAN.md](SOCIAL_BRAIN_PLAN.md)
 
-**When to build:** After the bot has been running live for 2–4 weeks and we have 30+ real sent replies to use as seed data. Can also start with manually written seed examples.
+**When to build:** After the bot has run live for 2–4 weeks to accumulate real community comments, OR bootstrap immediately with 30 manually written seed examples.
 
