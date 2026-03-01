@@ -139,13 +139,6 @@ async function startScraperAndOutreachLoop() {
       return;
     }
 
-    // GAP-04: Active hours guard — only operate 9 AM–11 PM PKT
-    if (!isActiveHours()) {
-      logger.info('🌙  Outside active hours (9 AM–11 PM PKT) — sleeping until next cycle');
-      setTimeout(tick, intervalMs);
-      return;
-    }
-
     runCount++;
     const runTs = new Date().toLocaleString('en-GB', {
       timeZone: 'Asia/Karachi',
