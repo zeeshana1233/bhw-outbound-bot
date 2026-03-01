@@ -831,3 +831,28 @@ inbox-monitor reply received  →  auto-pause all pending for that conversation
 - Ready to extract BHW scraper code from existing project (when available)
 - **All core engines are now complete:** comment, DM, conversation, inbox-monitor, follow-up
 - **Remaining:** wire all engines in `src/index.js` main loop, then flip to live mode
+
+---
+
+## Future Roadmap
+
+### 🔮 Social Brain Module (Planned — not started)
+
+**Description:** A semantic retrieval layer that replaces the static `knowledge-base.json` approach for voice/style matching.
+
+**Problem it solves:** The bot currently generates replies from tip-based rules. As we accumulate real post-reply pairs, we need a way to inject *actual examples of our voice* into prompts rather than abstract instructions. The full KB can't fit in a prompt — so we retrieve only the top 5 most relevant examples per request.
+
+**How it works:**
+- Every past reply (or manually curated example) is embedded via `text-embedding-3-small` and stored in a Qdrant vector DB
+- When a new post arrives, it's embedded and searched against the KB — top 5 semantically similar post→reply pairs are returned
+- Those 5 examples are injected into the LLM prompt as few-shot context before generation
+- KB grows automatically as the bot sends live replies (nightly sync job)
+
+**Stack additions:** Qdrant (Docker), `@qdrant/js-client-rest`, `text-embedding-3-small`
+
+**Estimated effort:** 8–10 hours (bottleneck is collecting seed data)
+
+**Full dev plan:** See [SOCIAL_BRAIN_PLAN.md](SOCIAL_BRAIN_PLAN.md)
+
+**When to build:** After the bot has been running live for 2–4 weeks and we have 30+ real sent replies to use as seed data. Can also start with manually written seed examples.
+
