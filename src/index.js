@@ -124,11 +124,15 @@ async function processQualifiedLeads() {
 async function startScraperAndOutreachLoop() {
   logger.info('🔄  Scraper + outreach loop starting…');
 
+  let runCount = 0;
+
   const tick = async () => {
     // ── Randomised interval (re-rolled every tick so the pattern is never fixed) ─
     const minMs      = config.bhw.scrapeIntervalMin || 10 * 60 * 1000;
     const maxMs      = config.bhw.scrapeIntervalMax || 20 * 60 * 1000;
     const intervalMs = Math.floor(minMs + Math.random() * (maxMs - minMs));
+    const nextMinStr = Math.round(intervalMs / 60000);
+
     if (botState.isPaused()) {
       logger.info('⏸️  Bot paused — skipping scrape cycle');
       setTimeout(tick, intervalMs);
@@ -142,14 +146,91 @@ async function startScraperAndOutreachLoop() {
       return;
     }
 
+    runCount++;
+    const runTs = new Date().toLocaleString('en-GB', {
+      timeZone: 'Asia/Karachi',
+      hour: '2-digit', minute: '2-digit',
+      day: '2-digit', month: 'short',
+    });
+
     // ── Scrape ──────────────────────────────────────────────────────
-    const scraper = new BHWScraper();
-    let newLeads  = [];
+    const scraper    = new BHWScraper();
+    let scrapeResult = null;
+    let newLeads     = [];
     try {
       logger.info('\n📡  Scraping BHW for new threads (max 3 newest per cycle)…');
-      newLeads = await scraper.scrapeAndStore(1, 3);
+      scrapeResult = await scraper.scrapeAndStore(1, 3);
+      newLeads     = scrapeResult.threads;
     } catch (err) {
       logger.error(`Scraper error: ${err.message}`);
+      await alerts.sendRawAlert([
+        `❌ *SCRAPER ERROR* | Run #${runCount} | ${runTs}`,
+        '',
+        `Error: ${err.message}`,
+        '',
+        `⏭ Retrying in ~${nextMinStr} min`,
+      ].join('\n')).catch(() => {});
+    }
+
+    // ── WhatsApp status ping after every run ─────────────────────────
+    if (scrapeResult) {
+      if (scrapeResult.cloudflareBlocked) {
+        // Cloudflare challenge couldn't be bypassed
+        await alerts.sendRawAlert([
+          `⚠️ *CLOUDFLARE BLOCK* | Run #${runCount} | ${runTs}`,
+          '',
+          'BHW returned a Cloudflare challenge — posts could not be loaded.',
+          'Challenge was NOT bypassed after 30s wait.',
+          '',
+          `📊 Posts visible: 0`,
+          `⏭ Auto-retrying in ~${nextMinStr} min`,
+          '',
+          '⚠️ If this repeats, the server IP may be rate-limited by BHW.',
+        ].join('\n')).catch(() => {});
+
+      } else if (scrapeResult.newProcessed === 0) {
+        // Healthy run, nothing new
+        await alerts.sendRawAlert([
+          `🔎 *Scraper Run #${runCount}* | ${runTs}`,
+          '',
+          `📊 Posts on page: ${scrapeResult.totalFound}  |  🔄 Already tracked: ${scrapeResult.alreadyExisted}`,
+          `🆕 New posts: 0 — all already seen`,
+          `✅ Bot is healthy`,
+          '',
+          `⏭ Next run in ~${nextMinStr} min`,
+        ].join('\n')).catch(() => {});
+
+      } else {
+        // New posts found — include AI breakdown
+        const approvedLines = newLeads
+          .filter(t => t.qualified)
+          .map(t => `  • "${t.title?.substring(0, 55)}" — ${Math.round((t.qualificationScore || 0) * 100)}%`);
+        const rejectedLines = newLeads
+          .filter(t => !t.qualified)
+          .map(t => `  • "${t.title?.substring(0, 55)}"`);
+
+        const lines = [
+          `🔎 *Scraper Run #${runCount}* | ${runTs}`,
+          '',
+          `📊 Posts on page: ${scrapeResult.totalFound}  |  🔄 Already tracked: ${scrapeResult.alreadyExisted}`,
+          `🆕 New this run: ${scrapeResult.newProcessed}`,
+          '',
+        ];
+
+        if (approvedLines.length > 0) {
+          lines.push(`✅ AI Approved (${approvedLines.length}):`);
+          approvedLines.forEach(l => lines.push(l));
+        }
+        if (rejectedLines.length > 0) {
+          lines.push(`❌ AI Rejected (${rejectedLines.length}):`);
+          rejectedLines.forEach(l => lines.push(l));
+        }
+
+        lines.push('');
+        lines.push(`⏭ Next run in ~${nextMinStr} min`);
+
+        await alerts.sendRawAlert(lines.join('\n')).catch(() => {});
+      }
     }
 
     // ── Outreach ─────────────────────────────────────────────────────
@@ -165,8 +246,7 @@ async function startScraperAndOutreachLoop() {
     );
 
     // ── Schedule next tick ────────────────────────────────────────────
-    const nextMin = (intervalMs / 60000).toFixed(1);
-    logger.info(`\n  ⏰  Next scrape in ${nextMin} min (randomised ${Math.round(minMs/60000)}–${Math.round(maxMs/60000)} min window)`);
+    logger.info(`\n  ⏰  Next scrape in ${nextMinStr} min (randomised ${Math.round(minMs/60000)}–${Math.round(maxMs/60000)} min window)`);
     setTimeout(tick, intervalMs);
   };
 

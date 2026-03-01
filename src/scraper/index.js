@@ -33,6 +33,7 @@ class BHWScraper {
     this.page = null;
     this.maxRetries = 3;
     this.retryDelay = 2000; // 2 seconds
+    this.cloudflareBlocked = false; // set true if CF challenge can't be bypassed
   }
 
   /**
@@ -168,6 +169,7 @@ class BHWScraper {
           
         } catch (e) {
           logger.warn('CloudFlare challenge still present after 30s, continuing anyway...');
+          this.cloudflareBlocked = true;
         }
       }
 
@@ -453,7 +455,17 @@ class BHWScraper {
     logger.info(`  AI approved: ${approved}`);
     logger.info(`  AI rejected: ${rejected}`);
 
-    return threadsData;
+    return {
+      threads: threadsData,
+      stats: {
+        totalFound: stats.total_found,
+        filteredOut: stats.filtered_out,
+        alreadyExisted: stats.already_exists,
+        newProcessed: stats.new_processed,
+        approved,
+        rejected,
+      },
+    };
   }
 
   /**
@@ -470,11 +482,17 @@ class BHWScraper {
       await this.initBrowser();
       
       const allThreads = [];
+      let totalFound = 0;
+      let totalAlreadyExisted = 0;
+      let totalNewProcessed = 0;
 
       for (let p = 1; p <= pages; p++) {
-        const threads = await this.scrapeListingWithDetails(p);
+        const { threads, stats: pageStats } = await this.scrapeListingWithDetails(p);
         logger.info(`Completed page ${p}: ${threads.length} new threads processed`);
         allThreads.push(...threads);
+        totalFound        += pageStats.totalFound;
+        totalAlreadyExisted += pageStats.alreadyExisted;
+        totalNewProcessed += pageStats.newProcessed;
 
         if (p < pages) {
           const delay = randomDelay(2000, 5000);
@@ -487,14 +505,22 @@ class BHWScraper {
       logger.info(`Total new threads stored: ${allThreads.length}`);
       
       const approved = allThreads.filter(t => t.qualified).length;
-      const rejected = allThreads.filter(t => !t.qualified).length;
+      const rejected  = allThreads.filter(t => !t.qualified).length;
       const approvalRate = allThreads.length > 0 ? ((approved / allThreads.length) * 100).toFixed(1) : 0;
       
       logger.info(`Threads approved by AI: ${approved}`);
       logger.info(`Threads rejected by AI: ${rejected}`);
       logger.info(`Approval rate: ${approvalRate}%`);
 
-      return allThreads;
+      return {
+        threads: allThreads,
+        cloudflareBlocked: this.cloudflareBlocked,
+        totalFound,
+        alreadyExisted: totalAlreadyExisted,
+        newProcessed: totalNewProcessed,
+        approved,
+        rejected,
+      };
     } finally {
       // Always close browser
       await this.closeBrowser();
