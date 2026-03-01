@@ -533,14 +533,13 @@ class BHWScraper {
    * Main scraping function
    * @param {number} pages - Number of pages to scrape
    * @param {number|null} maxNewThreads - Max new threads to process (null = unlimited)
-   * @param {boolean} keepAlive - Keep browser open after scrape (for looped runs)
    */
-  async scrapeAndStore(pages = 1, maxNewThreads = null, keepAlive = false) {
+  async scrapeAndStore(pages = 1, maxNewThreads = null) {
     this.maxNewThreads = maxNewThreads;
     logger.info(`Starting BHW scraper for ${pages} page(s)...`);
     
     try {
-      // Initialize browser (reuses existing if keepAlive was set on last run)
+      // Initialize browser
       await this.initBrowser();
       
       const allThreads = [];
@@ -584,13 +583,7 @@ class BHWScraper {
         rejected,
       };
     } finally {
-      if (!keepAlive) {
-        await this.closeBrowser();
-      } else {
-        logger.info('Browser kept alive for next run (keepAlive=true)');
-        // Reset CF flag so next run starts clean
-        this.cloudflareBlocked = false;
-      }
+      await this.closeBrowser();
     }
   }
 }
