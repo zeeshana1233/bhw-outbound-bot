@@ -1,26 +1,25 @@
 /**
- * Command Center — WhatsApp / Telegram two-way bot control
+ * Command Center — WhatsApp Group two-way bot control
  *
- * Replaces the admin panel. Zeeshan sends commands from Telegram; the bot
- * parses them (keyword fast-path first, OpenClaw AI fallback for natural
- * language), executes the action, and replies in Telegram.
+ * Replaces the Telegram command center. Zeeshan creates a WhatsApp group,
+ * the bot joins via whatsapp-web.js unofficial login (QR scan once), then
+ * listens for commands in that group and replies there.
  *
- * WhatsApp (CallMeBot) stays as the outbound alert channel — unchanged.
- * This service adds the INBOUND command layer on top.
+ * All alerts (handoff, hot lead, daily report …) also go to the same group
+ * via alerts.js — one place for everything.
  *
  * ── SETUP (one-time, ~2 minutes) ──────────────────────────────────────────
- *  1. Open Telegram → search "@BotFather" → send /newbot
- *  2. Name it anything (e.g. "Bitbash BHW Bot")
- *  3. Copy the token it gives you → TELEGRAM_BOT_TOKEN in .env
- *  4. Start a chat with your new bot → send any message
- *  5. Visit: https://api.telegram.org/bot<TOKEN>/getUpdates
- *     Find "chat":{"id": XXXXXXXXX} → that's your TELEGRAM_CHAT_ID
- *  6. Add TELEGRAM_CHAT_ID=XXXXXXXXX in .env
- *  7. restart the bot — command center starts automatically
+ *  1. Start the bot: node src/index.js
+ *  2. A QR code appears in the terminal — scan it with your phone:
+ *     WhatsApp → Settings → Linked Devices → Link a Device
+ *  3. Session auto-saved to .wwebjs_auth/ (never push that folder)
+ *  4. Create a WhatsApp group, add the linked number, put the exact group name
+ *     in .env: WA_GROUP_NAME=Bitbash BHW Bot
+ *  5. All future starts auto-login — no QR needed again
  *
  * ── AVAILABLE COMMANDS ────────────────────────────────────────────────────
  *  status          — full system snapshot (session, paused, uptime, today's stats)
- *  stats           — today's numbers (same as daily WhatsApp report)
+ *  stats           — today's numbers (same as daily report)
  *  leads           — lead funnel overview (qualified → DM'd → replied → converted)
  *  handoffs        — list conversations waiting for your attention
  *  convos          — active conversation count
@@ -33,20 +32,19 @@
  *  convert <user>  — mark a lead as converted
  *  skip <user>     — disqualify / blacklist a lead
  *  pause followup <user> — stop chasing a specific lead
- *  force report    — send the daily WhatsApp report right now
+ *  force report    — send the daily report right now
  *  help            — show this list
  *
- * Natural language also works — OpenClaw parses intent from plain sentences.
+ * Natural language also works — AI parses intent from plain sentences.
  * e.g. "how's the bot doing?", "show me today's numbers", "skip that guy mike22"
  */
 
-import https    from 'https';
-import logger   from '../utils/logger.js';
+import logger     from '../utils/logger.js';
 import { botState } from '../utils/botState.js';
-import alerts   from './alerts.js';
-import aiEngine from './aiEngine.js';
+import alerts     from './alerts.js';
+import aiEngine   from './aiEngine.js';
 import bhwSession from '../utils/bhwSession.js';
-import { config } from '../config/config.js';
+import { sendToGroup, onMessage, isReady } from './whatsappClient.js';
 import {
   getDailyStats,
   getHandedOffConversations,
@@ -60,93 +58,16 @@ import {
 import { query } from '../database/init.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TELEGRAM HTTP HELPERS
+// REPLY HELPER — sends to the WA command group
 // ─────────────────────────────────────────────────────────────────────────────
 
-function getToken() {
-  return config.telegram?.botToken ?? process.env.TELEGRAM_BOT_TOKEN;
-}
-
-function getChatId() {
-  const id = config.telegram?.chatId ?? process.env.TELEGRAM_CHAT_ID;
-  return id ? parseInt(id, 10) : null;
-}
-
-function telegramPost(method, body) {
-  const token = getToken();
-  return new Promise((resolve, reject) => {
-    const payload = JSON.stringify(body);
-    const req = https.request(
-      {
-        hostname: 'api.telegram.org',
-        path:     `/bot${token}/${method}`,
-        method:   'POST',
-        headers: {
-          'Content-Type':   'application/json',
-          'Content-Length': Buffer.byteLength(payload),
-        },
-      },
-      res => {
-        let data = '';
-        res.on('data', c => (data += c));
-        res.on('end', () => {
-          try { resolve(JSON.parse(data)); }
-          catch { resolve({ ok: false, raw: data }); }
-        });
-      }
-    );
-    req.on('error', reject);
-    req.write(payload);
-    req.end();
-  });
-}
-
-/** Send a message back to Zeeshan in Telegram */
+/** Send a reply to the command group */
 async function reply(text) {
-  const chatId = getChatId();
-  if (!chatId) {
-    logger.warn('[CommandCenter] TELEGRAM_CHAT_ID not set — cannot reply.');
-    return;
-  }
   try {
-    await telegramPost('sendMessage', {
-      chat_id:    chatId,
-      text,
-      parse_mode: 'Markdown',
-    });
+    await sendToGroup(text);
   } catch (err) {
-    logger.error('[CommandCenter] Telegram sendMessage failed:', err.message);
+    logger.error('[CommandCenter] reply failed:', err.message);
   }
-}
-
-/** Long-poll for new messages. Returns array of updates. */
-async function getUpdates(offset, timeoutSec = 25) {
-  const token = getToken();
-  return new Promise((resolve) => {
-    const req = https.request(
-      {
-        hostname: 'api.telegram.org',
-        path:     `/bot${token}/getUpdates?offset=${offset}&timeout=${timeoutSec}&allowed_updates=["message"]`,
-        method:   'GET',
-      },
-      res => {
-        let data = '';
-        res.on('data', c => (data += c));
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            resolve(parsed.ok ? parsed.result : []);
-          } catch {
-            resolve([]);
-          }
-        });
-      }
-    );
-    req.on('error', () => resolve([]));
-    // set socket timeout slightly longer than Telegram timeout
-    req.setTimeout((timeoutSec + 5) * 1000, () => { req.destroy(); resolve([]); });
-    req.end();
-  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -328,8 +249,7 @@ async function handlePause() {
   if (botState.isPaused()) {
     return reply('⏸️ Already paused. Send `resume` to restart.');
   }
-  botState.pause('manual via Telegram');
-  await alerts.sendRawAlert('⏸️ *Bot Paused*\n\nAll actions frozen by manual Telegram command. Send `resume` to restart.').catch(() => {});
+  botState.pause('manual via WhatsApp');
   await reply('⏸️ *Bot paused.*\nScraper, DMs, inbox replies and follow-ups are all frozen.\nSend `resume` to restart.');
 }
 
@@ -338,7 +258,6 @@ async function handleResume() {
     return reply('▶️ Already running — nothing to resume.');
   }
   botState.resume();
-  await alerts.sendRawAlert('▶️ *Bot Resumed*\n\nAll engines restarted via Telegram command.').catch(() => {});
   await reply('▶️ *Bot resumed.*\nAll engines are running again.');
 }
 
@@ -347,7 +266,6 @@ async function handleDryRun(on) {
   const msg = on
     ? '🧪 *Dry-run ON* — safe mode. No real DMs or comments will be sent.'
     : '🔴 *Dry-run OFF* — LIVE mode. Real DMs and comments are now being sent!';
-  await alerts.sendRawAlert(msg).catch(() => {});
   await reply(msg);
 }
 
@@ -471,78 +389,62 @@ async function dispatch(text) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POLLING LOOP
+// WHATSAPP GROUP LISTENER
 // ─────────────────────────────────────────────────────────────────────────────
 
 let _running = false;
 
 /**
- * Start the Telegram command center.
- * Long-polls Telegram for new messages and dispatches them.
- * Only accepts messages from the configured TELEGRAM_CHAT_ID.
- * Runs forever — restarts automatically on any transient error.
+ * Start the WhatsApp command center.
+ * Registers a message listener on the shared whatsappClient singleton.
+ * Only processes messages from the configured WA group (WA_GROUP_NAME).
+ * Dispatches commands and replies to the same group.
+ *
+ * Call this AFTER initWhatsApp() in index.js — the client must already be
+ * initialized before registering listeners (though queueing still works).
  */
 export async function startCommandCenter() {
-  const token  = getToken();
-  const chatId = getChatId();
-
-  if (!token) {
-    logger.warn('[CommandCenter] TELEGRAM_BOT_TOKEN not set — command center disabled.');
-    logger.warn('[CommandCenter] Add TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to .env to enable.');
-    return;
-  }
-
-  if (!chatId) {
-    logger.warn('[CommandCenter] TELEGRAM_CHAT_ID not set — command center disabled.');
-    logger.warn('[CommandCenter] Visit https://api.telegram.org/bot<TOKEN>/getUpdates after messaging your bot to find your chat ID.');
-    return;
-  }
-
   if (_running) return; // idempotent
+
+  const groupName = process.env.WA_GROUP_NAME || 'Bitbash BHW Bot';
+
+  logger.info(`[CommandCenter] ✅ Started — listening for WhatsApp commands in group "${groupName}"`);
   _running = true;
 
-  logger.info(`[CommandCenter] ✅ Started — listening for Telegram commands from chat ${chatId}`);
+  // Register inbound message handler on the shared client
+  onMessage(async (msg) => {
+    // Only process group messages (ignore private DMs to the linked number)
+    if (!msg.from.endsWith('@g.us')) return;
 
-  // Send a startup ping so Zeeshan knows the bot is live
-  reply('🟢 *Bot started.*\nSend `status` for a full snapshot, or `help` for commands.').catch(() => {});
+    const { getGroupId } = await import('./whatsappClient.js');
+    const groupId = getGroupId();
 
-  let offset = 0;
+    // Only accept messages from our configured command group
+    if (groupId && msg.from !== groupId) return;
 
-  const poll = async () => {
-    try {
-      const updates = await getUpdates(offset);
+    // Ignore messages sent by the bot itself
+    if (msg.fromMe) return;
 
-      for (const update of updates) {
-        offset = update.update_id + 1; // advance offset to ack this update
+    const text = (msg.body || '').trim();
+    if (!text) return;
 
-        const msg = update.message;
-        if (!msg || !msg.text) continue;
+    logger.info(`[CommandCenter] Received: "${text.substring(0, 80)}"`);
 
-        // Security: ignore messages from anyone who isn't Zeeshan
-        if (msg.chat.id !== chatId) {
-          logger.warn(`[CommandCenter] Ignored message from unknown chat ${msg.chat.id}`);
-          continue;
-        }
+    // Fire and forget — don't let one slow command stall the listener
+    dispatch(text).catch(err =>
+      reply(`⚠️ Error handling command: ${err.message}`).catch(() => {})
+    );
+  });
 
-        const text = msg.text.trim();
-        logger.info(`[CommandCenter] Received: "${text.substring(0, 80)}"`);
-
-        // Fire and forget — don't let one slow command block the poll loop
-        dispatch(text).catch(err =>
-          reply(`⚠️ Error handling command: ${err.message}`).catch(() => {})
-        );
-      }
-    } catch (err) {
-      logger.error('[CommandCenter] Poll error:', err.message);
-      // Brief pause before retrying to avoid hammering Telegram on errors
-      await new Promise(r => setTimeout(r, 5000));
+  // Startup ping — wait briefly for the WA client to be ready if needed
+  const pingWhenReady = async (retries = 10) => {
+    if (isReady()) {
+      await reply('🟢 *Bot started.*\nSend `status` for a full snapshot, or `help` for commands.').catch(() => {});
+      return;
     }
-
-    // Immediate re-poll (long-polling handles the wait server-side)
-    if (_running) setImmediate(poll);
+    if (retries > 0) setTimeout(() => pingWhenReady(retries - 1), 3000);
   };
-
-  poll();
+  pingWhenReady();
 }
 
 export default { startCommandCenter };

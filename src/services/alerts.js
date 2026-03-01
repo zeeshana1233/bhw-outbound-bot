@@ -1,79 +1,40 @@
 /**
  * Alerts Service
  *
- * Sends WhatsApp alerts to Zeeshan when the bot detects a conversation
- * that needs human attention ([HANDOFF] detected).
+ * Sends alerts to the WhatsApp command group when the bot detects anything
+ * that needs Zeeshan's attention (handoffs, hot leads, session expiry, etc.).
  *
- * Uses CallMeBot — free WhatsApp API (no account needed beyond linking once).
+ * Uses whatsapp-web.js via the shared whatsappClient singleton — same session
+ * that the command center uses for inbound commands.
  *
- * HOW TO SET UP CallMeBot (one-time, 30 seconds):
- *   1. Save +34 644 321 633 as a WhatsApp contact
- *   2. Send this exact message to that number on WhatsApp:
- *        "I allow callmebot to send me messages"
- *   3. You'll receive your API key in reply
- *   4. Set CALLMEBOT_API_KEY and WHATSAPP_ALERT_NUMBER in your .env
+ * NO extra setup required beyond what whatsappClient.js already needs:
+ *   1. QR scan once on first run
+ *   2. Set WA_GROUP_NAME in .env to the exact name of your control group
  *
- * Config (from .env):
- *   WHATSAPP_ENABLED=true
- *   WHATSAPP_ALERT_NUMBER=your_number_with_country_code  (e.g. 447912345678)
- *   CALLMEBOT_API_KEY=your_callmebot_api_key
+ * All exported functions keep their original signatures so nothing else
+ * in the codebase needs changing.
  */
 
-import https from 'https';
 import logger from '../utils/logger.js';
-import { config } from '../config/config.js';
+import { sendToGroup } from './whatsappClient.js';
 
 // ─────────────────────────────────────────────────
-// INTERNAL — HTTP GET helper (no extra dependencies)
+// INTERNAL — thin wrapper so every caller goes via sendToGroup
 // ─────────────────────────────────────────────────
 
-function httpsGet(url) {
-  return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => resolve({ status: res.statusCode, body: data }));
-    }).on('error', reject);
-  });
-}
-
-// ─────────────────────────────────────────────────
-// LOW-LEVEL SEND
-// ─────────────────────────────────────────────────
-
-/**
- * Send a raw WhatsApp message via CallMeBot.
- * @param {string} text - Plain text (will be URL-encoded)
- */
-async function sendWhatsApp(text) {
-  const enabled = config.whatsapp?.enabled ?? process.env.WHATSAPP_ENABLED === 'true';
-  const phone   = config.whatsapp?.alertNumber ?? process.env.WHATSAPP_ALERT_NUMBER;
-  const apiKey  = config.whatsapp?.callmebotApiKey ?? process.env.CALLMEBOT_API_KEY;
-
-  if (!enabled) {
-    logger.info('[Alerts] WhatsApp disabled — would have sent:', text.substring(0, 80));
-    return { skipped: true };
-  }
-
-  if (!phone || !apiKey) {
-    logger.warn('[Alerts] WHATSAPP_ALERT_NUMBER or CALLMEBOT_API_KEY not set — skipping alert.');
-    return { skipped: true };
-  }
-
-  const encodedText = encodeURIComponent(text);
-  const url = `https://api.callmebot.com/whatsapp.php?phone=${phone}&text=${encodedText}&apikey=${apiKey}`;
-
+async function sendAlert(text) {
   try {
-    const resp = await httpsGet(url);
-    if (resp.status === 200) {
-      logger.info('[Alerts] WhatsApp alert sent successfully.');
-      return { sent: true };
+    const result = await sendToGroup(text);
+    if (result?.skipped) {
+      logger.info('[Alerts] WhatsApp not ready — skipped:', text.substring(0, 80));
+    } else if (result?.sent === false) {
+      logger.warn('[Alerts] sendToGroup failed:', result.error || 'unknown error');
     } else {
-      logger.warn(`[Alerts] CallMeBot returned HTTP ${resp.status}: ${resp.body.substring(0, 120)}`);
-      return { sent: false, status: resp.status };
+      logger.info('[Alerts] Alert sent to WhatsApp group.');
     }
+    return result;
   } catch (err) {
-    logger.error('[Alerts] WhatsApp send failed:', err.message);
+    logger.error('[Alerts] sendAlert error:', err.message);
     return { sent: false, error: err.message };
   }
 }
@@ -87,7 +48,7 @@ async function sendWhatsApp(text) {
  * Used for one-off alerts (e.g. session restored).
  */
 export async function sendRawAlert(text) {
-  return sendWhatsApp(text);
+  return sendAlert(text);
 }
 
 /**
@@ -121,7 +82,7 @@ export async function sendHandoffAlert(username, convUrl, messages, reason = 'AI
   ].join('\n');
 
   logger.warn(`[Alerts] Firing handoff alert for @${username} — "${reason}"`);
-  return sendWhatsApp(text);
+  return sendAlert(text);
 }
 
 // ─────────────────────────────────────────────────
@@ -170,7 +131,7 @@ export async function sendTelegramRedirectAlert(username, convUrl, lead, message
   lines.push(`🔗 BHW conversation: ${convUrl}`);
 
   logger.info(`[Alerts] Telegram redirect alert for @${username} — "${projectTitle}"`);
-  return sendWhatsApp(lines.join('\n'));
+  return sendAlert(lines.join('\n'));
 }
 
 // ─────────────────────────────────────────────────
@@ -195,7 +156,7 @@ export async function sendSessionExpiredAlert() {
   ].join('\n');
 
   logger.warn('[Alerts] Session expired alert fired');
-  return sendWhatsApp(text);
+  return sendAlert(text);
 }
 
 // ─────────────────────────────────────────────────
@@ -227,7 +188,7 @@ export async function sendHotLeadAlert(lead, dmText) {
   ].join('\n');
 
   logger.info(`[Alerts] Hot lead alert for @${lead.poster_username} (score ${score})`);
-  return sendWhatsApp(text);
+  return sendAlert(text);
 }
 
 // ─────────────────────────────────────────────────
@@ -260,7 +221,7 @@ export async function sendCallReminder(username, convUrl, urgentLine, context = 
   ].join('\n');
 
   logger.warn(`[Alerts] Urgent call reminder for @${username} — "${urgentLine?.substring(0, 60)}"`);
-  return sendWhatsApp(text);
+  return sendAlert(text);
 }
 
 // ─────────────────────────────────────────────────
@@ -294,7 +255,7 @@ export async function sendDailyReport(stats = {}) {
   ].join('\n');
 
   logger.info('[Alerts] Sending daily report...');
-  return sendWhatsApp(text);
+  return sendAlert(text);
 }
 
 export default { sendRawAlert, sendHandoffAlert, sendHotLeadAlert, sendCallReminder, sendTelegramRedirectAlert, sendSessionExpiredAlert, sendDailyReport };

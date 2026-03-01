@@ -32,11 +32,9 @@ export const config = {
   },
   
   whatsapp: {
-    enabled: process.env.WHATSAPP_ENABLED === 'true',
-    alertNumber: process.env.WHATSAPP_ALERT_NUMBER,
-    callmebotApiKey: process.env.CALLMEBOT_API_KEY,
+    groupName: process.env.WA_GROUP_NAME || 'Bitbash BHW Bot',
   },
-  
+
   bot: {
     minDelay: parseInt(process.env.MIN_DELAY_MS) || 2000,
     maxDelay: parseInt(process.env.MAX_DELAY_MS) || 8000,
@@ -48,11 +46,6 @@ export const config = {
     followUpDays: (process.env.FOLLOW_UP_DAYS || '7,12,21')          // plan §5.2
       .split(',')
       .map(d => parseInt(d.trim())),
-  },
-  
-  telegram: {
-    botToken: process.env.TELEGRAM_BOT_TOKEN,
-    chatId:   process.env.TELEGRAM_CHAT_ID,
   },
 
   system: {

@@ -14,6 +14,7 @@ import alerts from './services/alerts.js';
 import bhwSession from './utils/bhwSession.js';
 import { botState } from './utils/botState.js';
 import { startCommandCenter } from './services/commandCenter.js';
+import { initWhatsApp } from './services/whatsappClient.js';
 
 dotenv.config();
 
@@ -223,7 +224,8 @@ async function main() {
     startCommunityCommenter({ dryRun: DRY_RUN });
     scheduleDailyReport();
     bhwSession.startHealthCheck();
-    startCommandCenter();  // Telegram two-way command interface
+    await initWhatsApp();     // QR scan once → session auto-saved to .wwebjs_auth/
+    startCommandCenter();     // WhatsApp group two-way command interface
 
     // Scraper + immediate outreach — one unified loop
     startScraperAndOutreachLoop();
@@ -235,7 +237,7 @@ async function main() {
     logger.info('   • Daily report      — WhatsApp summary every day at 09:00 AM');
     logger.info('   • Session health    — verified every 30 min; WhatsApp alert if expired');
     logger.info('   • Community comments — organic BHW replies every 4–6h (max 3/run)');
-    logger.info('   • Command center    — Telegram bot (send help for commands)\n');
+    logger.info('   • Command center    — WhatsApp group (send \'help\' in your group)\n');
 
   } catch (error) {
     logger.error('❌  Fatal error starting bot:', error);
