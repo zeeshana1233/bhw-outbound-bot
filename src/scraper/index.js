@@ -303,13 +303,14 @@ class BHWScraper {
     const $ = cheerio.load(html);
     const allCards = $('div.structItem--thread').toArray();
 
-    // ── Only look at the top 3 cards ────────────────────────────────────────
+    // ── Only look at the top 5 cards ────────────────────────────────────────
     // BHW always lists newest posts first. New leads always arrive at the top.
-    // Checking only positions 0‑2 is sufficient — anything below cannot be
-    // newer than what we've already seen — and avoids scanning 20+ irrelevant
-    // threads every cycle.
-    const TOP_N    = 3;
+    // Checking only the top 5 avoids scanning 20+ irrelevant threads every cycle.
+    const TOP_N    = 5;
     const threadCards = allCards.slice(0, TOP_N);
+
+    // Tracks all 5 inspected posts with per-post status for the WA ping
+    const inspectedPosts = [];
 
     const stats = {
       total_found: allCards.length,   // total on page (info only)
