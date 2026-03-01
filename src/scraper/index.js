@@ -49,13 +49,19 @@ class BHWScraper {
     
     // Connect with puppeteer-real-browser for CloudFlare bypass
     const { browser, page } = await connect({
-      headless: 'auto', // Auto-detect based on environment
+      headless: 'auto',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
+        '--disable-infobars',
+        '--window-size=1366,768',
+        '--lang=en-US,en;q=0.9',
+        '--disable-extensions',
+        '--no-first-run',
+        '--disable-default-apps',
       ],
-      turnstile: true, // Enable Cloudflare Turnstile bypass
+      turnstile: true,
       customConfig: {},
       connectOption: {},
       disableXvfb: false,
@@ -64,6 +70,46 @@ class BHWScraper {
 
     this.browser = browser;
     this.page = page;
+
+    // Set realistic browser headers and viewport
+    await this.page.setViewport({ width: 1366, height: 768 });
+    await this.page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'DNT': '1',
+    });
+
+    // ── Human warmup: visit BHW homepage before going to the forum ──
+    // A real user doesn't jump straight to a deep page — they land on the
+    // homepage first. This builds a legit-looking session cookie from scratch.
+    logger.info('Warming up session — visiting BHW homepage first...');
+    try {
+      await this.page.goto('https://www.blackhatworld.com/', {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000,
+      });
+      await sleep(randomDelay(3000, 6000));
+
+      // Simulate reading the page — scroll down slowly like a human
+      await this.page.evaluate(async () => {
+        await new Promise(resolve => {
+          let pos = 0;
+          const step = () => {
+            pos += Math.floor(Math.random() * 120 + 60);
+            window.scrollTo(0, pos);
+            if (pos < 900) setTimeout(step, Math.floor(Math.random() * 200 + 100));
+            else resolve();
+          };
+          step();
+        });
+      });
+
+      await sleep(randomDelay(2000, 4000));
+      logger.info('Warmup complete — session established.');
+    } catch (e) {
+      logger.warn('Warmup visit failed (non-fatal):', e.message);
+    }
 
     logger.info('Real browser initialized successfully (CloudFlare bypass enabled)');
   }
@@ -155,26 +201,41 @@ class BHWScraper {
       logger.debug(`Page title: ${title}`);
 
       if (title.includes('Just a moment') || title.includes('Cloudflare')) {
-        logger.info('CloudFlare challenge detected, waiting up to 30 seconds...');
+        logger.info('CloudFlare challenge detected, waiting up to 60 seconds...');
         
         try {
-          // Wait for CloudFlare challenge to complete
           await this.page.waitForFunction(
             () => !document.title.includes('Just a moment') && !document.title.includes('Cloudflare'),
-            { timeout: 30000 }
+            { timeout: 60000 }
           );
           
           logger.info('CloudFlare challenge passed!');
-          await sleep(2000);
+          await sleep(randomDelay(2000, 4000));
           
         } catch (e) {
-          logger.warn('CloudFlare challenge still present after 30s, continuing anyway...');
+          logger.warn('CloudFlare challenge still present after 60s, marking as blocked.');
           this.cloudflareBlocked = true;
         }
       }
 
+      // Simulate human reading — scroll partway down the page
+      try {
+        await this.page.evaluate(async () => {
+          await new Promise(resolve => {
+            let pos = 0;
+            const step = () => {
+              pos += Math.floor(Math.random() * 100 + 50);
+              window.scrollTo(0, pos);
+              if (pos < 600) setTimeout(step, Math.floor(Math.random() * 150 + 80));
+              else resolve();
+            };
+            step();
+          });
+        });
+      } catch (_) {}
+
       // Wait for any dynamic content
-      await sleep(randomDelay(1000, 2000));
+      await sleep(randomDelay(1500, 3000));
 
       return await this.page.content();
     } catch (error) {
@@ -472,13 +533,14 @@ class BHWScraper {
    * Main scraping function
    * @param {number} pages - Number of pages to scrape
    * @param {number|null} maxNewThreads - Max new threads to process (null = unlimited)
+   * @param {boolean} keepAlive - Keep browser open after scrape (for looped runs)
    */
-  async scrapeAndStore(pages = 1, maxNewThreads = null) {
+  async scrapeAndStore(pages = 1, maxNewThreads = null, keepAlive = false) {
     this.maxNewThreads = maxNewThreads;
     logger.info(`Starting BHW scraper for ${pages} page(s)...`);
     
     try {
-      // Initialize browser
+      // Initialize browser (reuses existing if keepAlive was set on last run)
       await this.initBrowser();
       
       const allThreads = [];
@@ -522,8 +584,13 @@ class BHWScraper {
         rejected,
       };
     } finally {
-      // Always close browser
-      await this.closeBrowser();
+      if (!keepAlive) {
+        await this.closeBrowser();
+      } else {
+        logger.info('Browser kept alive for next run (keepAlive=true)');
+        // Reset CF flag so next run starts clean
+        this.cloudflareBlocked = false;
+      }
     }
   }
 }

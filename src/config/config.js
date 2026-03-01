@@ -25,8 +25,8 @@ export const config = {
   bhw: {
     username: process.env.BHW_USERNAME || 'app_pilot',
     chromeProfilePath: process.env.BHW_CHROME_PROFILE_PATH,
-    scrapeIntervalMin: parseInt(process.env.BHW_SCRAPE_INTERVAL_MIN) || 600000,   // 10 minutes
-    scrapeIntervalMax: parseInt(process.env.BHW_SCRAPE_INTERVAL_MAX) || 1200000,  // 20 minutes
+    scrapeIntervalMin: parseInt(process.env.BHW_SCRAPE_INTERVAL_MIN) || 1200000,  // 20 minutes
+    scrapeIntervalMax: parseInt(process.env.BHW_SCRAPE_INTERVAL_MAX) || 2400000,  // 40 minutes
     inboxCheckInterval: parseInt(process.env.BHW_INBOX_CHECK_INTERVAL) || 3600000, // 1 hour
     baseUrl: 'https://www.blackhatworld.com/forums/hire-a-freelancer.76/',
   },
