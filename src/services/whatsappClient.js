@@ -25,6 +25,8 @@
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from 'qrcode-terminal';
+import fs     from 'fs';
+import path   from 'path';
 import logger  from '../utils/logger.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,6 +72,28 @@ function buildClient() {
     logger.info('\n[WhatsApp] 📱  Scan this QR with WhatsApp → Settings → Linked Devices:\n');
     qrcode.generate(qr, { small: true });
     logger.info('[WhatsApp] Waiting for scan…');
+
+    // Also write a scannable HTML file — open C:\bhw-bot\qr.html in Chrome on server
+    try {
+      const htmlPath = path.resolve('qr.html');
+      const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>BHW Bot — Scan WhatsApp QR</title>
+<style>body{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif;background:#111;color:#fff;}
+h2{margin-bottom:8px;}p{color:#aaa;margin:4px 0;}canvas{margin-top:20px;border:16px solid #fff;border-radius:8px;}</style>
+</head><body>
+<h2>📱 Scan with WhatsApp</h2>
+<p>WhatsApp → Settings → Linked Devices → Link a Device</p>
+<p style="color:#f90">QR expires in ~60s — refresh page if expired (restart bot service)</p>
+<canvas id="qr"></canvas>
+<script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+<script>QRCode.toCanvas(document.getElementById('qr'),'${qr.replace(/'/g, "\\'")}',{width:320,margin:2},function(e){if(e)document.body.innerHTML+='<p style=color:red>'+e+'</p>';});</script>
+</body></html>`;
+      fs.writeFileSync(htmlPath, html, 'utf8');
+      logger.info(`[WhatsApp] 🌐  QR also saved → ${htmlPath}  (open in Chrome on this machine)`);
+    } catch (e) {
+      // non-fatal — log continues to work regardless
+    }
   });
 
   // ── Ready ─────────────────────────────────────────────────────────────────
