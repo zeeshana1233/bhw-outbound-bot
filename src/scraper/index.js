@@ -1,0 +1,549 @@
+/**
+ * BHW Scraper Module - Discovers job posts from BlackHatWorld
+ * Translated from working Python implementation
+ * Uses puppeteer-real-browser to bypass CloudFlare protection
+ * 
+ * Successfully tested and bypasses CloudFlare challenges!
+ */
+
+import { connect } from 'puppeteer-real-browser';
+import * as cheerio from 'cheerio';
+import logger from '../utils/logger.js';
+import { config } from '../config/config.js';
+import { 
+  checkThreadExists, 
+  createLead, 
+  updateLeadQualification,
+  getExistingThreadIds 
+} from '../database/queries.js';
+import { 
+  extractThreadId, 
+  sanitizeText, 
+  getThreadAgeCategory, 
+  sleep, 
+  randomDelay 
+} from '../utils/helpers.js';
+import aiEngine from '../services/aiEngine.js';
+import { logActivity } from '../database/queries.js';
+
+class BHWScraper {
+  constructor() {
+    this.baseUrl = config.bhw.baseUrl;
+    this.browser = null;
+    this.page = null;
+    this.maxRetries = 3;
+    this.retryDelay = 2000; // 2 seconds
+  }
+
+  /**
+   * Initialize browser for scraping using puppeteer-real-browser
+   * This bypasses CloudFlare protection
+   */
+  async initBrowser() {
+    if (this.browser) {
+      return; // Already initialized
+    }
+
+    logger.info('Initializing real browser for scraping...');
+    
+    // Connect with puppeteer-real-browser for CloudFlare bypass
+    const { browser, page } = await connect({
+      headless: 'auto', // Auto-detect based on environment
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+      ],
+      turnstile: true, // Enable Cloudflare Turnstile bypass
+      customConfig: {},
+      connectOption: {},
+      disableXvfb: false,
+      ignoreAllFlags: false
+    });
+
+    this.browser = browser;
+    this.page = page;
+
+    logger.info('Real browser initialized successfully (CloudFlare bypass enabled)');
+  }
+
+  /**
+   * Close browser
+   */
+  async closeBrowser() {
+    if (this.browser) {
+      await this.browser.close();
+      this.browser = null;
+      this.page = null;
+      logger.info('Browser closed');
+    }
+  }
+
+  /**
+   * Parse integer from string (handles commas, etc.)
+   */
+  parseInteger(str) {
+    if (!str) return null;
+    const cleaned = str.replace(/,/g, '').replace(/[^\d]/g, '');
+    return cleaned ? parseInt(cleaned, 10) : null;
+  }
+
+  /**
+   * Clean text to remove problematic Unicode characters
+   */
+  cleanText(text) {
+    if (!text) return text;
+    
+    return text
+      .replace(/\u0131/g, 'i')     // Turkish dotless i
+      .replace(/\u2019/g, "'")     // Right single quotation mark
+      .replace(/\u2018/g, "'")     // Left single quotation mark
+      .replace(/\u201c/g, '"')     // Left double quotation mark
+      .replace(/\u201d/g, '"')     // Right double quotation mark
+      .replace(/\u2013/g, '-')     // En dash
+      .replace(/\u2014/g, '-')     // Em dash
+      .replace(/\u2026/g, '...')   // Horizontal ellipsis
+      .replace(/[^\x00-\x7F]/g, '?'); // Remove non-ASCII
+  }
+
+  /**
+   * Parse time from various BHW time formats
+   */
+  parseTime(timeAttr) {
+    if (!timeAttr) return null;
+    
+    try {
+      const date = new Date(timeAttr);
+      return isNaN(date.getTime()) ? null : date;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Check if date is today
+   */
+  isToday(date) {
+    if (!date) return false;
+    const today = new Date();
+    return date.toDateString() === today.toDateString();
+  }
+
+  /**
+   * Fetch page with retry logic using Puppeteer Real Browser
+   * Handles CloudFlare challenges automatically
+   */
+  async fetchPageWithRetries(url, attempt = 1) {
+    try {
+      logger.debug(`Fetching ${url} (attempt ${attempt}/${this.maxRetries})`);
+      
+      if (attempt > 1) {
+        await sleep(randomDelay(2000, 5000));
+      }
+
+      await this.page.goto(url, { 
+        waitUntil: 'domcontentloaded',
+        timeout: 60000 
+      });
+
+      // Wait a bit for initial load
+      await sleep(2000);
+
+      // Check if CloudFlare challenge is present
+      let title = await this.page.title();
+      logger.debug(`Page title: ${title}`);
+
+      if (title.includes('Just a moment') || title.includes('Cloudflare')) {
+        logger.info('CloudFlare challenge detected, waiting up to 30 seconds...');
+        
+        try {
+          // Wait for CloudFlare challenge to complete
+          await this.page.waitForFunction(
+            () => !document.title.includes('Just a moment') && !document.title.includes('Cloudflare'),
+            { timeout: 30000 }
+          );
+          
+          logger.info('CloudFlare challenge passed!');
+          await sleep(2000);
+          
+        } catch (e) {
+          logger.warn('CloudFlare challenge still present after 30s, continuing anyway...');
+        }
+      }
+
+      // Wait for any dynamic content
+      await sleep(randomDelay(1000, 2000));
+
+      return await this.page.content();
+    } catch (error) {
+      logger.error(`Fetch attempt ${attempt}/${this.maxRetries} failed for ${url}:`, error.message);
+      
+      if (attempt < this.maxRetries) {
+        const delay = this.retryDelay * attempt;
+        logger.info(`Retrying in ${delay}ms...`);
+        await sleep(delay);
+        return this.fetchPageWithRetries(url, attempt + 1);
+      }
+      
+      return null;
+    }
+  }
+
+  /**
+   * Get thread description (OP's first post)
+   */
+  async getThreadDescription(url, threadId) {
+    try {
+      logger.info(`Fetching description for thread: ${threadId}`);
+      
+      const html = await this.fetchPageWithRetries(url);
+      
+      if (!html) {
+        logger.warn(`Failed to retrieve thread page: ${url}`);
+        return 'No description found';
+      }
+
+      const $ = cheerio.load(html);
+      
+      // Find the OP's first post
+      const opDescription = $('article.message.message--post').first();
+      
+      if (opDescription.length > 0) {
+        const opBody = opDescription.find('.message-content .bbWrapper');
+        const description = this.cleanText(opBody.text().trim()) || 'No description found';
+        logger.info(`Description fetched: ${description.length} chars`);
+        return description;
+      }
+
+      return 'No description found';
+    } catch (error) {
+      logger.error(`Error fetching thread description from ${url}:`, error.message);
+      return 'No description found';
+    }
+  }
+
+  /**
+   * Scrape thread listing page and fetch details
+   */
+  async scrapeListingWithDetails(pageNum = 1) {
+    const url = pageNum === 1 ? this.baseUrl : `${this.baseUrl}page-${pageNum}`;
+    
+    logger.info(`Scraping BHW page ${pageNum}...`);
+    
+    const html = await this.fetchPageWithRetries(url);
+    
+    if (!html) {
+      logger.error(`Failed to fetch listing page ${pageNum}`);
+      return [];
+    }
+
+    const $ = cheerio.load(html);
+    const threadCards = $('div.structItem--thread').toArray();
+    
+    const stats = {
+      total_found: threadCards.length,
+      filtered_out: 0,
+      already_exists: 0,
+      new_processed: 0
+    };
+
+    logger.info(`Found ${stats.total_found} threads on page ${pageNum}`);
+
+    // Process all threads
+    const threadsToProcess = threadCards.length;
+    logger.info(`Processing all ${threadsToProcess} threads`);
+
+    // ============================================
+    // PASS 1: Extract all thread IDs (fast, no DB calls)
+    // ============================================
+    logger.info('Step 1: Extracting all thread IDs from page...');
+    const allThreadIds = [];
+    const threadDataMap = new Map(); // Map thread_id -> basic data
+
+    for (let i = 0; i < threadsToProcess; i++) {
+      const card = $(threadCards[i]);
+
+      // Extract title and URL
+      const titleTag = card.find('.structItem-title a:not(.labelLink)').first();
+      if (titleTag.length === 0) {
+        stats.filtered_out++;
+        continue;
+      }
+
+      const threadPath = titleTag.attr('href') || '';
+      const fullUrl = 'https://www.blackhatworld.com' + threadPath;
+      const threadId = extractThreadId(fullUrl) || fullUrl;
+      const title = this.cleanText(titleTag.text().trim());
+
+      // Extract author
+      const authorTag = card.find('.structItem-minor .username, .structItem-parts .username').first();
+      const author = authorTag.length > 0 ? this.cleanText(authorTag.text().trim()) : null;
+
+      // Extract replies and views
+      const metaPairs = card.find('.structItem-cell--meta dl.pairs.pairs--justified dd').toArray();
+      const replies = metaPairs.length >= 1 ? this.parseInteger($(metaPairs[0]).text()) : null;
+      const views = metaPairs.length >= 2 ? this.parseInteger($(metaPairs[1]).text()) : null;
+
+      // Extract posted time
+      const postedTimeTag = card.find('.structItem-startDate time.u-dt, .structItem-cell--main time.u-dt, .structItem-minor time, time').first();
+      const datetimeAttr = postedTimeTag.attr('datetime') || postedTimeTag.attr('data-datetime') || postedTimeTag.attr('title');
+      const postedAt = this.parseTime(datetimeAttr);
+
+      allThreadIds.push(threadId);
+      threadDataMap.set(threadId, {
+        threadId,
+        fullUrl,
+        title,
+        author,
+        replies,
+        views,
+        postedAt
+      });
+    }
+
+    logger.info(`Extracted ${allThreadIds.length} thread IDs`);
+
+    // ============================================
+    // PASS 2: Batch check which threads already exist (1 DB query)
+    // ============================================
+    logger.info('Step 2: Checking database for existing threads (batch query)...');
+    const existingThreadIds = await getExistingThreadIds(allThreadIds);
+    const existingSet = new Set(existingThreadIds);
+
+    logger.info(`Found ${existingThreadIds.length} threads already in database`);
+    stats.already_exists = existingThreadIds.length;
+
+    // ============================================
+    // PASS 3: Process only NEW threads — sorted newest-first, capped at 3
+    // ============================================
+    logger.info('Step 3: Processing NEW threads only (newest first, max 3 per cycle)...');
+    let newThreadIds = allThreadIds.filter(id => !existingSet.has(id));
+
+    // Sort by postedAt descending so we always pick the most recent leads
+    newThreadIds.sort((a, b) => {
+      const dateA = threadDataMap.get(a)?.postedAt ?? new Date(0);
+      const dateB = threadDataMap.get(b)?.postedAt ?? new Date(0);
+      return dateB - dateA;
+    });
+
+    const cap = this.maxNewThreads || 3;
+    if (newThreadIds.length > cap) {
+      logger.info(`Capping at ${cap} newest threads (found ${newThreadIds.length} new)`);
+      newThreadIds = newThreadIds.slice(0, cap);
+    }
+    logger.info(`${newThreadIds.length} NEW thread(s) to process this cycle`);
+
+    const threadsData = [];
+    let processedCount = 0;
+
+    for (const threadId of newThreadIds) {
+      processedCount++;
+      const basicData = threadDataMap.get(threadId);
+      
+      logger.info(`Processing thread ${processedCount}/${newThreadIds.length}...`);
+      logger.info(`  Thread: ${basicData.title.substring(0, 50)}...`);
+      logger.info(`  Posted: ${basicData.postedAt}`);
+      
+      // Calculate thread age category
+      const threadAgeCategory = getThreadAgeCategory(basicData.postedAt);
+      logger.info(`Thread age category: ${threadAgeCategory}`);
+
+      // Skip ancient threads (>1 year)
+      if (threadAgeCategory === 'ancient') {
+        logger.info('Skipping - thread is too old (>1 year)');
+        stats.filtered_out++;
+        continue;
+      }
+
+      logger.info('NEW thread - fetching details...');
+      
+      // Fetch full description
+      const description = await this.getThreadDescription(basicData.fullUrl, threadId);
+      
+      // Store in database first (before AI qualification)
+      logger.info('Storing thread in database...');
+      const leadData = {
+        threadId,
+        threadUrl: basicData.fullUrl,
+        title: basicData.title,
+        description,
+        posterUsername: basicData.author,
+        posterUrl: basicData.author ? `https://www.blackhatworld.com/members/${basicData.author}/` : null,
+        postDate: basicData.postedAt,
+        threadAgeCategory,
+        tags: []
+      };
+
+      const lead = await createLead(leadData);
+      
+      // Log activity
+      await logActivity({
+        actionType: 'scrape',
+        leadId: lead.id,
+        description: `Discovered new thread: ${basicData.title}`,
+        metadata: {
+          threadId,
+          threadAgeCategory,
+          replies: basicData.replies,
+          views: basicData.views
+        }
+      });
+
+      logger.info(`Thread stored in database (Lead ID: ${lead.id})`);
+
+      // Qualify with AI (OpenClaw — GPT-4o mini)
+      logger.info('Qualifying thread with OpenClaw (GPT-4o mini)...');
+      const qualification = await aiEngine.qualifyLead(basicData.title, description);
+      
+      logger.info(`Qualification result: ${qualification.qualified ? 'APPROVED' : 'REJECTED'} (Confidence: ${qualification.confidence}, Tier: ${qualification.tier})`);
+
+      // Update lead with qualification
+      await updateLeadQualification(
+        lead.id,
+        qualification.qualified,
+        qualification.reason,
+        qualification.confidence
+      );
+
+      // Log qualification
+      await logActivity({
+        actionType: 'qualification',
+        leadId: lead.id,
+        description: `AI qualification: ${qualification.qualified ? 'APPROVED' : 'REJECTED'}`,
+        metadata: {
+          confidence: qualification.confidence,
+          tier: qualification.tier,
+          reason: qualification.reason
+        }
+      });
+
+      threadsData.push({
+        threadId,
+        title: basicData.title,
+        url: basicData.fullUrl,
+        author: basicData.author,
+        repliesCount: basicData.replies,
+        viewsCount: basicData.views,
+        postedAt: basicData.postedAt,
+        threadAgeCategory,
+        description,
+        qualified: qualification.qualified,
+        qualificationScore: qualification.confidence,
+        leadId: lead.id
+      });
+
+      stats.new_processed++;
+
+      // Add delay between threads to avoid rate limiting
+      if (processedCount < newThreadIds.length) {
+        const delay = randomDelay(1000, 3000);
+        logger.debug(`Waiting ${delay}ms before next thread...`);
+        await sleep(delay);
+      }
+    }
+
+    logger.info(`Page ${pageNum} Statistics:`);
+    logger.info(`  Total found: ${stats.total_found}`);
+    logger.info(`  Filtered out: ${stats.filtered_out}`);
+    logger.info(`  Already exists: ${stats.already_exists}`);
+    logger.info(`  New threads stored: ${stats.new_processed}`);
+    
+    const approved = threadsData.filter(t => t.qualified).length;
+    const rejected = threadsData.filter(t => !t.qualified).length;
+    logger.info(`  AI approved: ${approved}`);
+    logger.info(`  AI rejected: ${rejected}`);
+
+    return threadsData;
+  }
+
+  /**
+   * Main scraping function
+   * @param {number} pages - Number of pages to scrape
+   * @param {number|null} maxNewThreads - Max new threads to process (null = unlimited)
+   */
+  async scrapeAndStore(pages = 1, maxNewThreads = null) {
+    this.maxNewThreads = maxNewThreads;
+    logger.info(`Starting BHW scraper for ${pages} page(s)...`);
+    
+    try {
+      // Initialize browser
+      await this.initBrowser();
+      
+      const allThreads = [];
+
+      for (let p = 1; p <= pages; p++) {
+        const threads = await this.scrapeListingWithDetails(p);
+        logger.info(`Completed page ${p}: ${threads.length} new threads processed`);
+        allThreads.push(...threads);
+
+        if (p < pages) {
+          const delay = randomDelay(2000, 5000);
+          logger.info(`Waiting ${delay}ms before next page...`);
+          await sleep(delay);
+        }
+      }
+
+      logger.info('\n=== SCRAPING COMPLETED ===');
+      logger.info(`Total new threads stored: ${allThreads.length}`);
+      
+      const approved = allThreads.filter(t => t.qualified).length;
+      const rejected = allThreads.filter(t => !t.qualified).length;
+      const approvalRate = allThreads.length > 0 ? ((approved / allThreads.length) * 100).toFixed(1) : 0;
+      
+      logger.info(`Threads approved by AI: ${approved}`);
+      logger.info(`Threads rejected by AI: ${rejected}`);
+      logger.info(`Approval rate: ${approvalRate}%`);
+
+      return allThreads;
+    } finally {
+      // Always close browser
+      await this.closeBrowser();
+    }
+  }
+}
+
+/**
+ * Main scraper loop - runs every 2 minutes
+ */
+export async function startScraperLoop() {
+  logger.info('Scraper loop starting...');
+  
+  // Run immediately on start
+  logger.info('Running initial scrape...');
+  const scraper = new BHWScraper();
+  
+  try {
+    await scraper.scrapeAndStore(1);
+  } catch (error) {
+    logger.error('Error in initial scrape:', error);
+    await logActivity({
+      actionType: 'error',
+      description: 'Initial scrape error',
+      status: 'failed',
+      errorMessage: error.message
+    });
+  }
+
+  // Then run every 2 minutes
+  setInterval(async () => {
+    const intervalScraper = new BHWScraper();
+    try {
+      logger.info('Running scheduled scrape...');
+      await intervalScraper.scrapeAndStore(1);
+    } catch (error) {
+      logger.error('Error in scheduled scrape:', error);
+      await logActivity({
+        actionType: 'error',
+        description: 'Scheduled scrape error',
+        status: 'failed',
+        errorMessage: error.message
+      });
+    }
+  }, config.bhw.scrapeInterval);
+
+  logger.info(`Scraper loop started (interval: ${config.bhw.scrapeInterval}ms = ${config.bhw.scrapeInterval / 1000 / 60} minutes)`);
+}
+
+export { BHWScraper };
+export default BHWScraper;
+

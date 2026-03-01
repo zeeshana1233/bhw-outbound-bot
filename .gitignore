@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+# package-lock.json is intentionally committed (locks exact dependency versions for apps)
+
+# Environment variables
+.env
+
+# Logs
+logs/*
+!logs/.gitkeep
+*.log
+npm-debug.log*
+
+# Chrome profile data
+chrome-profile/
+.wwebjs_auth/
+.wwebjs_cache/
+.bhw-session/
+
+# BHW session cookies (contains login credentials — never commit!)
+bhw-cookies.json
+
+# Database dumps
+*.sql.backup
+dump.sql
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+tmp/
+temp/

@@ -1,0 +1,350 @@
+{
+  "_meta": {
+    "description": "Reference knowledge for BHW community comment generation. Each category has facts, tips, and common mistakes that can be turned into genuinely helpful replies. Add more entries to improve comment quality. OpenClaw picks the most relevant entries for each thread.",
+    "version": "1.0",
+    "lastUpdated": "2026-02-28",
+    "instructions": "Add new categories freely. Each entry has: 'tip' (the actual knowledge), 'context' (when it applies), 'tags' (keywords for matching)."
+  },
+
+  "web_scraping": {
+    "description": "Web scraping, crawlers, data extraction, Puppeteer, Playwright, Selenium, Scrapy",
+    "tips": [
+      {
+        "tip": "Rotating proxies alone won't save you if your User-Agent and browser fingerprint look robotic. Use puppeteer-real-browser or Playwright with stealth plugin to randomize canvas, WebGL, and timezone fingerprints.",
+        "context": "Anti-bot detection, Cloudflare bypass",
+        "tags": ["cloudflare", "fingerprint", "puppeteer", "playwright", "detection"]
+      },
+      {
+        "tip": "Scrapy's DOWNLOAD_DELAY combined with AUTOTHROTTLE_ENABLED dynamically adjusts your crawl speed based on server response times. Set AUTOTHROTTLE_TARGET_CONCURRENCY to 0.5 for residential-looking traffic patterns.",
+        "context": "Scrapy rate limiting and politeness",
+        "tags": ["scrapy", "rate limiting", "throttle", "crawl delay"]
+      },
+      {
+        "tip": "For JavaScript-heavy sites, a simple headless browser is overkill if you only need data from the initial HTML. Intercept XHR/fetch calls with page.on('response') in Puppeteer to grab the raw JSON the frontend fetches — much faster than parsing rendered HTML.",
+        "context": "Scraping SPAs and React/Vue apps",
+        "tags": ["SPA", "XHR", "API intercept", "react", "vue", "fetch"]
+      },
+      {
+        "tip": "Residential proxies from ISPs are significantly harder to detect than datacenter proxies. If you're getting blocked, the proxy type is usually the first thing to change before tweaking any code.",
+        "context": "Proxy selection and anti-blocking",
+        "tags": ["proxy", "residential", "datacenter", "blocked", "IP ban"]
+      },
+      {
+        "tip": "When a site uses CAPTCHA, look for the API endpoint being called directly rather than rendering the page. Many sites validate tokens server-side but the actual data endpoint has no CAPTCHA protection.",
+        "context": "CAPTCHA bypass, API reverse engineering",
+        "tags": ["captcha", "bypass", "API", "token", "reverse engineer"]
+      },
+      {
+        "tip": "Set realistic random delays — not just between page loads but between mouse events, keystrokes and form submissions. Most modern bot detection measures the timing variance between UI events, not just request rate.",
+        "context": "Human behavior simulation",
+        "tags": ["delay", "human behavior", "timing", "bot detection", "simulation"]
+      },
+      {
+        "tip": "For large-scale scraping, run Chrome in a persistent context with a real Chrome user profile. The browser will accumulate cookies, history, and cache that make fingerprints indistinguishable from a real user.",
+        "context": "Chrome profile, persistent session",
+        "tags": ["chrome profile", "persistent", "cookies", "session", "fingerprint"]
+      }
+    ]
+  },
+
+  "seo": {
+    "description": "Search engine optimization, rankings, backlinks, on-page SEO, technical SEO",
+    "tips": [
+      {
+        "tip": "Core Web Vitals (LCP, INP, CLS) directly affect rankings in 2025. LCP is almost always a server response time or render-blocking resource issue — fix your TTFB first before touching images.",
+        "context": "Technical SEO, Core Web Vitals",
+        "tags": ["core web vitals", "LCP", "INP", "CLS", "TTFB", "speed", "ranking"]
+      },
+      {
+        "tip": "Internal linking is one of the most underrated ranking levers. A well-structured silo with topic clusters and tight internal linking passes PageRank more effectively than dozens of new backlinks.",
+        "context": "On-page SEO, site structure",
+        "tags": ["internal linking", "silo", "topical authority", "pagerank", "backlinks"]
+      },
+      {
+        "tip": "For local SEO, consistent NAP (Name, Address, Phone) across all citations makes a bigger difference than most people expect. An inconsistency in a single major citation site can suppress the Google Business Profile map pack ranking.",
+        "context": "Local SEO, Google Business Profile",
+        "tags": ["local SEO", "NAP", "citations", "Google Business", "map pack"]
+      },
+      {
+        "tip": "E-E-A-T signals are increasingly important for YMYL niches. Author pages with real credentials and bio links to external publications carry significantly more weight than generic content.",
+        "context": "Content SEO, YMYL, E-E-A-T",
+        "tags": ["E-E-A-T", "YMYL", "author", "expertise", "content quality"]
+      },
+      {
+        "tip": "Structured data (JSON-LD schema markup) doesn't directly boost rankings but dramatically increases CTR by adding rich results in SERP. FAQ schema is the fastest win for informational pages.",
+        "context": "Schema markup, rich results",
+        "tags": ["schema", "structured data", "JSON-LD", "rich results", "FAQ", "CTR"]
+      },
+      {
+        "tip": "Programmatic SEO works when your database has unique data that can't be easily replicated. Thin pages with templated content penalize your whole domain — each page must offer a unique enough variation to justify indexing.",
+        "context": "Programmatic SEO, bulk pages",
+        "tags": ["programmatic SEO", "bulk", "thin content", "unique", "index"]
+      },
+      {
+        "tip": "When recovering from a Google penalty, start by identifying which update hit you using a timeline correlation tool. Most HCU (Helpful Content Update) recoveries require architectural changes to the site, not just content rewrites.",
+        "context": "Google penalties, algorithm updates",
+        "tags": ["penalty", "HCU", "helpful content", "recovery", "Google update", "algorithm"]
+      }
+    ]
+  },
+
+  "wordpress": {
+    "description": "WordPress development, plugins, themes, WooCommerce, performance, security",
+    "tips": [
+      {
+        "tip": "WP_CRON is notoriously unreliable on low-traffic sites because it only fires when a page loads. Replace it with a real server cron job: add `define('DISABLE_WP_CRON', true)` to wp-config.php and set up a 5-minute server cron calling wp-cron.php.",
+        "context": "WordPress scheduled tasks, cron",
+        "tags": ["wp-cron", "cron job", "scheduled tasks", "reliability", "server cron"]
+      },
+      {
+        "tip": "Before any custom post type or taxonomy query, always check you're using pre_get_posts on the main query rather than a new WP_Query loop. Secondary loops skip the main query cache and hit the DB every time.",
+        "context": "WordPress query optimization",
+        "tags": ["WP_Query", "pre_get_posts", "query", "performance", "database", "custom post type"]
+      },
+      {
+        "tip": "For WooCommerce stores doing significant volume, move session storage from default PHP sessions to database sessions, and put a transient cache layer in front of product meta queries. The default implementation hits the DB on every cart action.",
+        "context": "WooCommerce performance",
+        "tags": ["WooCommerce", "sessions", "performance", "transient", "database", "cart"]
+      },
+      {
+        "tip": "Dequeuing unused scripts per page type is faster than any caching plugin. Use conditional tags (is_front_page, is_woocommerce, is_singular) in wp_enqueue_scripts to only load what each page type actually needs.",
+        "context": "WordPress performance, scripts",
+        "tags": ["dequeue", "scripts", "performance", "enqueue", "conditional", "page speed"]
+      },
+      {
+        "tip": "For WordPress REST API integrations, use application passwords (built-in since WP 5.6) instead of plugins like JWT Auth. They're nonce-protected, revokable per device, and simpler to audit.",
+        "context": "WordPress API authentication",
+        "tags": ["REST API", "JWT", "application passwords", "authentication", "API", "security"]
+      },
+      {
+        "tip": "The fastest way to find the bottleneck in a slow WordPress site is Query Monitor plugin in development mode. Sort queries by execution time — 90% of the time a single bad meta_query with no index is the culprit.",
+        "context": "WordPress debugging, performance",
+        "tags": ["Query Monitor", "slow", "debug", "meta_query", "index", "database"]
+      }
+    ]
+  },
+
+  "automation": {
+    "description": "Task automation, bots, workflow automation, RPA, Make/Zapier, n8n, scripts",
+    "tips": [
+      {
+        "tip": "When automating web workflows that require login, cookies are much more reliable than re-authenticating each run. Serialize and save your authenticated cookies after first login, load them on subsequent runs before making any requests.",
+        "context": "Session management in automation",
+        "tags": ["cookies", "session", "authentication", "login", "persistent", "automation"]
+      },
+      {
+        "tip": "n8n self-hosted is dramatically cheaper than Make or Zapier for high-volume automations. The workflow logic is near-identical, and you own the data. Run it on a $5–10 VPS and it handles thousands of executions per day.",
+        "context": "Automation platform choice",
+        "tags": ["n8n", "Make", "Zapier", "self-hosted", "cost", "workflow", "VPS"]
+      },
+      {
+        "tip": "Error handling in automation is where most pipelines fail. Every step that makes an external call (API, scrape, email) needs a retry with exponential backoff. Silent failures in the middle of a pipeline corrupt data and are hard to debug later.",
+        "context": "Automation reliability, error handling",
+        "tags": ["error handling", "retry", "exponential backoff", "reliability", "pipeline"]
+      },
+      {
+        "tip": "For keyboard/mouse automation (PyAutoGUI, AutoHotKey), add randomized movement speed and path — most detection systems flag perfectly linear mouse movements as robotic.",
+        "context": "Desktop/UI automation, RPA",
+        "tags": ["PyAutoGUI", "AutoHotKey", "RPA", "mouse movement", "detection", "randomize"]
+      },
+      {
+        "tip": "Google Sheets + Apps Script is a surprisingly powerful (and free) automation layer for non-developers. It can pull data from any public API, send emails, and trigger webhooks without any infrastructure.",
+        "context": "Simple automation, Google Workspace",
+        "tags": ["Google Sheets", "Apps Script", "free", "webhook", "API", "no-code"]
+      }
+    ]
+  },
+
+  "mobile_apps": {
+    "description": "iOS, Android, React Native, Flutter, app development, App Store, Play Store",
+    "tips": [
+      {
+        "tip": "React Native's new architecture (Fabric + JSI) eliminates the old bridge bottleneck for most use cases. If you're starting a new RN project in 2025, enable the new architecture from day one — retrofitting it onto a large existing codebase is painful.",
+        "context": "React Native performance, architecture",
+        "tags": ["React Native", "Fabric", "JSI", "architecture", "bridge", "performance"]
+      },
+      {
+        "tip": "App Store review times have improved significantly: most apps now get reviewed in 24–48 hours. However, apps with subscription IAP or mature content flags average 4–7 days. Submit at least 2 weeks before a planned launch to be safe.",
+        "context": "App Store submission timing",
+        "tags": ["App Store", "review time", "submission", "launch", "approval", "Apple"]
+      },
+      {
+        "tip": "For Flutter, use const constructors wherever possible. Flutter's architecture rebuilds entire widget subtrees and const widgets are automatically cached and reused without rebuild, which is the single biggest free performance win.",
+        "context": "Flutter performance",
+        "tags": ["Flutter", "const", "performance", "widget", "rebuild", "optimization"]
+      },
+      {
+        "tip": "ASO (App Store Optimization) matters more than most developers realize. The app title and first 100 characters of the description are the highest-weight fields for App Store search ranking. Repeat your primary keyword in the title and at the very start of the description.",
+        "context": "App Store SEO, visibility",
+        "tags": ["ASO", "App Store Optimization", "keyword", "ranking", "description", "visibility"]
+      }
+    ]
+  },
+
+  "social_media_automation": {
+    "description": "Social media bots, scheduling, growth, LinkedIn, Twitter/X, Instagram, TikTok",
+    "tips": [
+      {
+        "tip": "Most social platform APIs rate-limit by account, not by IP. Distributing actions across multiple accounts on different IPs is less effective than simply slowing down actions per account. Match the action frequency to what a real human power-user would do.",
+        "context": "Social media API rate limits",
+        "tags": ["rate limit", "API", "social media", "actions", "frequency", "human-like"]
+      },
+      {
+        "tip": "LinkedIn's Sales Navigator has a much more generous API than the free tier, but the real workaround most people use is Sales Navigator's export-to-CSV feature combined with Apollo.io for enrichment, rather than any API at all.",
+        "context": "LinkedIn lead generation",
+        "tags": ["LinkedIn", "Sales Navigator", "API", "export", "lead generation", "enrichment"]
+      },
+      {
+        "tip": "Twitter/X accounts get harder action limits the newer they are. A 2-week-old account doing 50 follows per day will trigger a soft-ban; a 2-year-old account with consistent posting history can do 3–4x more before hitting limits.",
+        "context": "Twitter/X account age and limits",
+        "tags": ["Twitter", "X", "account age", "limits", "follow", "soft ban", "trust"]
+      },
+      {
+        "tip": "For Instagram automation, the web interface has stricter detection than the mobile API endpoints. Libraries that mimic the official iOS app's HTTP signature are significantly harder to flag than headless browser approaches.",
+        "context": "Instagram automation, detection",
+        "tags": ["Instagram", "mobile API", "iOS", "detection", "headless browser", "automation"]
+      }
+    ]
+  },
+
+  "api_development": {
+    "description": "REST APIs, GraphQL, webhooks, backend development, Node.js, Python, integrations",
+    "tips": [
+      {
+        "tip": "Webhook reliability requires idempotency. Your endpoint will receive duplicate deliveries — sometimes 5–10 minutes apart. Add a unique event ID check before processing any webhook payload to prevent double-charges or duplicate records.",
+        "context": "Webhook implementation, reliability",
+        "tags": ["webhook", "idempotency", "duplicate", "event ID", "reliability"]
+      },
+      {
+        "tip": "For rate-limited third-party APIs, implement a token bucket in Redis rather than a simple per-minute counter. Token buckets allow bursting within limits and distribute requests more evenly, which keeps you under rate limits while maximizing throughput.",
+        "context": "API rate limiting, token bucket",
+        "tags": ["rate limiting", "token bucket", "Redis", "burst", "throughput", "API"]
+      },
+      {
+        "tip": "When integrating with Stripe, always validate the webhook signature using Stripe's SDK rather than accepting all POST requests to your endpoint. Unverified webhook endpoints are a common target for replay attacks.",
+        "context": "Stripe integration, security",
+        "tags": ["Stripe", "webhook", "signature", "security", "validation", "payment"]
+      },
+      {
+        "tip": "GraphQL N+1 queries are the single most common performance killer in production GraphQL APIs. Use DataLoader (or any batching library) to batch and cache database calls per request cycle. Without it, a single list query can make hundreds of DB round-trips.",
+        "context": "GraphQL performance, N+1",
+        "tags": ["GraphQL", "N+1", "DataLoader", "batching", "performance", "database"]
+      }
+    ]
+  },
+
+  "ai_ml": {
+    "description": "AI tools, LLMs, prompting, fine-tuning, automation with AI, ChatGPT, Claude",
+    "tips": [
+      {
+        "tip": "System prompts are the highest-leverage part of any LLM integration. Give the model a role, constraints, output format, and 2–3 concise in-context examples all in the system prompt. User prompt should only contain the variable data. This alone cuts hallucinations by 50–70% vs. putting everything in one big message.",
+        "context": "LLM prompting, system prompts",
+        "tags": ["LLM", "system prompt", "prompting", "hallucination", "ChatGPT", "Claude", "GPT"]
+      },
+      {
+        "tip": "For production AI pipelines, always add JSON output validation. LLMs occasionally produce near-valid JSON (trailing comma, missing brace). Parse errors in the middle of a pipeline are expensive — wrap every JSON.parse in a fallback strip-and-retry.",
+        "context": "AI output parsing, reliability",
+        "tags": ["JSON", "parsing", "validation", "retry", "pipeline", "LLM output"]
+      },
+      {
+        "tip": "GPT-4o mini is remarkably capable for structured tasks (classification, extraction, JSON output) at roughly 1/30th the price of GPT-4o. Profile your prompts: classification and short-form tasks rarely need the full model.",
+        "context": "AI model selection, cost",
+        "tags": ["GPT-4o mini", "cost", "model selection", "classification", "extraction", "price"]
+      },
+      {
+        "tip": "RAG (Retrieval-Augmented Generation) with a vector database is overkill for most use cases under ~100 documents. A well-structured JSON file loaded into the context window is faster, cheaper, and more reliable for small knowledge bases.",
+        "context": "RAG, knowledge base, vector database",
+        "tags": ["RAG", "vector database", "embeddings", "context window", "knowledge base", "retrieval"]
+      }
+    ]
+  },
+
+  "affiliate_marketing": {
+    "description": "Affiliate marketing, CPA, content sites, niches, monetization",
+    "tips": [
+      {
+        "tip": "Affiliate link cloaking with redirect tracking (e.g. PrettyLinks, ThirstyAffiliates, or a simple 301 on your own domain) gives you click analytics AND prevents affiliate ID stripping by ad blockers and browsers that strip UTM params from referral URLs.",
+        "context": "Affiliate link management",
+        "tags": ["affiliate", "link cloaking", "redirect", "tracking", "PrettyLinks", "UTM"]
+      },
+      {
+        "tip": "Email list monetization consistently outperforms display ads by 10–50x RPM on the same traffic. Even a 500-person niche list monetized with a single relevant affiliate product outperforms a 5000-visitor/month content site on AdSense.",
+        "context": "Email vs display monetization",
+        "tags": ["email list", "monetization", "RPM", "AdSense", "affiliate", "traffic"]
+      },
+      {
+        "tip": "For CPA offers, the landing page split tests that usually move the needle most are: headline rewrites, hero image/video changes, and social proof placement (above or below CTA). Button color changes rarely produce statistically significant lifts.",
+        "context": "CPA conversion rate optimization",
+        "tags": ["CPA", "landing page", "split test", "conversion", "headline", "social proof"]
+      }
+    ]
+  },
+
+  "discord_bots": {
+    "description": "Discord bots, Discord.js, bot development, community management, Discord API",
+    "tips": [
+      {
+        "tip": "Discord's Gateway intents system requires you to declare which events your bot needs. Using GUILD_MEMBERS or MESSAGE_CONTENT intents requires privileged intent approval in the developer portal for bots in 100+ servers. Plan for this before launch.",
+        "context": "Discord API, gateway intents",
+        "tags": ["Discord", "gateway intents", "MESSAGE_CONTENT", "GUILD_MEMBERS", "bot", "privileged"]
+      },
+      {
+        "tip": "For high-traffic Discord bots, shard from day one even if you're small. Resharding a live bot is painful. Discord.js's built-in ShardingManager handles this automatically — the overhead on a small bot is negligible.",
+        "context": "Discord bot scaling, sharding",
+        "tags": ["Discord", "sharding", "ShardingManager", "scaling", "Discord.js"]
+      },
+      {
+        "tip": "Discord slash commands are now the standard and soon the only supported interaction model. If you're still using message prefix commands, migrate — prefix commands require the MESSAGE_CONTENT privileged intent which is being restricted.",
+        "context": "Discord slash commands, migration",
+        "tags": ["Discord", "slash commands", "prefix commands", "migration", "interaction"]
+      }
+    ]
+  },
+
+  "traffic_generation": {
+    "description": "Web traffic, paid ads, organic growth, Reddit, forum marketing, content distribution",
+    "tips": [
+      {
+        "tip": "Reddit's algorithm heavily weights early upvotes within the first 30–60 minutes for new posts. The best organic strategy is consistently posting value content in smaller, highly relevant subreddits where you'll appear in the top posts rather than competing in massive subreddits.",
+        "context": "Reddit organic traffic",
+        "tags": ["Reddit", "upvotes", "algorithm", "subreddit", "organic", "traffic"]
+      },
+      {
+        "tip": "Content repurposing is more efficient than content creation. One long-form article → LinkedIn article excerpt → Twitter thread → short YouTube video → Quora answer. Five traffic channels from one piece of research.",
+        "context": "Content distribution, repurposing",
+        "tags": ["content repurposing", "distribution", "LinkedIn", "Twitter", "YouTube", "Quora"]
+      },
+      {
+        "tip": "For paid traffic, always separate warm (retargeting) and cold (prospecting) campaigns into different ad sets with different bids and creatives. Most ad accounts underperform because conversion events from retargeting inflate the apparent performance of cold campaigns.",
+        "context": "Paid advertising, Facebook/Google Ads",
+        "tags": ["paid ads", "retargeting", "prospecting", "cold audience", "warm audience", "Facebook Ads"]
+      }
+    ]
+  },
+
+  "general_development": {
+    "description": "Software development best practices, tools, debugging, deployment, version control",
+    "tips": [
+      {
+        "tip": "The most underused debugging technique is binary search: cut your code in half, confirm which half contains the bug, then cut again. This finds almost any non-obvious bug in O(log n) steps regardless of codebase size.",
+        "context": "Debugging strategy",
+        "tags": ["debugging", "binary search", "bug", "troubleshooting", "strategy"]
+      },
+      {
+        "tip": "Environment variables vs config files: never commit secrets to git, even in private repos. Use a .env file locally and environment variables in production. Tools like dotenv (Node), python-decouple (Python), or just os.environ work fine for most use cases.",
+        "context": "Environment configuration, security",
+        "tags": ["environment variables", ".env", "secrets", "git", "security", "config"]
+      },
+      {
+        "tip": "PM2 is still the simplest production process manager for Node.js on a VPS. cluster_mode + watch + max_restarts gives you auto-restart, multi-core utilization, and deployment in a single JSON config file with no Docker needed for most use cases.",
+        "context": "Node.js deployment, process management",
+        "tags": ["PM2", "Node.js", "deployment", "VPS", "process manager", "cluster mode"]
+      },
+      {
+        "tip": "Git commits should be atomic: one logical change per commit. The fastest way to untangle a messy git history when debugging a regression is git bisect — it binary searches through your commit history to find the exact commit that introduced a bug.",
+        "context": "Git workflow, debugging regressions",
+        "tags": ["git", "bisect", "commit", "regression", "debugging", "history"]
+      }
+    ]
+  }
+}
