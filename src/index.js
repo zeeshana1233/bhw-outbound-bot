@@ -67,7 +67,13 @@ async function processQualifiedLeads() {
         break;
       }
 
-      // Step 1 — Comment on the thread
+      // Step 1 — Comment on the thread (fresh posts only — <30 days)
+      const ageCategory = lead.thread_age_category || 'fresh';
+      if (ageCategory !== 'fresh') {
+        logger.info(`  ⏭  Skipping comment — thread is "${ageCategory}" (comments for fresh threads only)`);
+        continue;
+      }
+
       const commentResult = await generateAndPostComment(lead, { dryRun: botState.isDryRun() });
       if (!commentResult.success) {
         logger.warn(`  Comment failed — skipping DM for lead #${lead.id}`);
@@ -76,7 +82,6 @@ async function processQualifiedLeads() {
       commentsSent++;
 
       // GAP-02: Only DM posters on fresh threads (<30 days)
-      const ageCategory = lead.thread_age_category || 'fresh';
       if (!shouldSendDM(ageCategory)) {
         logger.info(`  ⏭  Skipping DM — thread is "${ageCategory}" (DMs for fresh threads only)`);
 
@@ -151,7 +156,7 @@ async function startScraperAndOutreachLoop() {
     let scrapeResult = null;
     let newLeads     = [];
     try {
-      logger.info('\n📡  Scraping BHW — checking top 3 posts on page 1…');
+      logger.info('\n📡  Scraping BHW — checking top 5 posts on page 1…');
       scrapeResult = await scraper.scrapeAndStore(1);
       newLeads     = scrapeResult.threads;
     } catch (err) {
@@ -167,56 +172,50 @@ async function startScraperAndOutreachLoop() {
 
     // ── WhatsApp status ping after every run ─────────────────────────
     if (scrapeResult) {
+      const statusIcon = (s) => {
+        if (s === 'seen')            return '🔄';
+        if (s === 'new-approved')    return '✅';
+        if (s === 'new-rejected')    return '❌';
+        if (s === 'skipped-ancient') return '⏳';
+        return '❓';
+      };
+
+      const postLines = (scrapeResult.inspectedPosts || []).map((p, i) => {
+        const icon  = statusIcon(p.status);
+        const label = p.status === 'seen'            ? 'Already tracked'
+                    : p.status === 'new-approved'    ? `AI APPROVED (${Math.round((p.confidence || 0) * 100)}%)`
+                    : p.status === 'new-rejected'    ? `AI rejected (${Math.round((p.confidence || 0) * 100)}%)`
+                    : p.status === 'skipped-ancient' ? 'Skipped — too old'
+                    : 'Pending';
+        return `${icon} ${i + 1}. "${p.title?.substring(0, 50)}" — ${label}`;
+      });
+
       if (scrapeResult.cloudflareBlocked) {
-        // Cloudflare challenge couldn't be bypassed
         await alerts.sendRawAlert([
           `⚠️ *CLOUDFLARE BLOCK* | Run #${runCount} | ${runTs}`,
           '',
           'BHW returned a Cloudflare challenge — posts could not be loaded.',
-          'Challenge was NOT bypassed after 30s wait.',
           '',
-          `📊 Posts visible: 0`,
           `⏭ Auto-retrying in ~${nextMinStr} min`,
-          '',
           '⚠️ If this repeats, the server IP may be rate-limited by BHW.',
         ].join('\n')).catch(() => {});
 
-      } else if (scrapeResult.newProcessed === 0) {
-        // Healthy run, nothing new
-        await alerts.sendRawAlert([
-          `🔎 *Scraper Run #${runCount}* | ${runTs}`,
-          '',
-          `📊 Posts on page: ${scrapeResult.totalFound}  |  🔄 Already tracked: ${scrapeResult.alreadyExisted}`,
-          `🆕 New posts: 0 — all already seen`,
-          `✅ Bot is healthy`,
-          '',
-          `⏭ Next run in ~${nextMinStr} min`,
-        ].join('\n')).catch(() => {});
-
       } else {
-        // New posts found — include AI breakdown
-        const approvedLines = newLeads
-          .filter(t => t.qualified)
-          .map(t => `  • "${t.title?.substring(0, 55)}" — ${Math.round((t.qualificationScore || 0) * 100)}%`);
-        const rejectedLines = newLeads
-          .filter(t => !t.qualified)
-          .map(t => `  • "${t.title?.substring(0, 55)}"`);
-
+        const hasNew = scrapeResult.newProcessed > 0;
         const lines = [
           `🔎 *Scraper Run #${runCount}* | ${runTs}`,
           '',
-          `📊 Posts on page: ${scrapeResult.totalFound}  |  🔄 Already tracked: ${scrapeResult.alreadyExisted}`,
-          `🆕 New this run: ${scrapeResult.newProcessed}`,
+          `📊 Page total: ${scrapeResult.totalFound} posts  |  Checking: top 5`,
+          '',
+          '*Top 5 posts checked:*',
+          ...postLines,
           '',
         ];
 
-        if (approvedLines.length > 0) {
-          lines.push(`✅ AI Approved (${approvedLines.length}):`);
-          approvedLines.forEach(l => lines.push(l));
-        }
-        if (rejectedLines.length > 0) {
-          lines.push(`❌ AI Rejected (${rejectedLines.length}):`);
-          rejectedLines.forEach(l => lines.push(l));
+        if (hasNew) {
+          lines.push(`🆕 New this run: ${scrapeResult.newProcessed}  |  ✅ AI approved: ${scrapeResult.approved}  |  ❌ Rejected: ${scrapeResult.rejected}`);
+        } else {
+          lines.push(`🔄 All top-5 already tracked — bot is healthy`);
         }
 
         lines.push('');

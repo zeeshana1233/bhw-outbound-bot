@@ -321,9 +321,9 @@ class BHWScraper {
     logger.info(`Found ${stats.total_found} threads on page ${pageNum} — inspecting top ${TOP_N}`);
 
     // ============================================
-    // PASS 1: Extract IDs from top 3 only (fast, no DB calls)
+    // PASS 1: Extract IDs from top 5 only (fast, no DB calls)
     // ============================================
-    logger.info('Step 1: Extracting top-3 thread IDs...');
+    logger.info('Step 1: Extracting top-5 thread IDs...');
     const allThreadIds = [];
     const threadDataMap = new Map();
 
@@ -366,6 +366,9 @@ class BHWScraper {
         views,
         postedAt
       });
+
+      // Pre-populate inspectedPosts — status updated in later passes
+      inspectedPosts.push({ threadId, title, url: fullUrl, status: 'pending' });
     }
 
     logger.info(`Extracted ${allThreadIds.length} thread IDs`);
@@ -380,10 +383,16 @@ class BHWScraper {
     logger.info(`Found ${existingThreadIds.length} threads already in database`);
     stats.already_exists = existingThreadIds.length;
 
+    // Mark already-seen posts in inspectedPosts
+    for (const tid of existingThreadIds) {
+      const p = inspectedPosts.find(p => p.threadId === tid);
+      if (p) p.status = 'seen';
+    }
+
     // ============================================
-    // PASS 3: Process only NEW threads from the top 3
+    // PASS 3: Process only NEW threads from the top 5
     // ============================================
-    logger.info('Step 3: Processing NEW threads from top-3...');
+    logger.info('Step 3: Processing NEW threads from top-5...');
     const newThreadIds = allThreadIds.filter(id => !existingSet.has(id));
     logger.info(`${newThreadIds.length} NEW thread(s) to process this cycle (out of top ${TOP_N} checked)`);
 
@@ -406,6 +415,8 @@ class BHWScraper {
       if (threadAgeCategory === 'ancient') {
         logger.info('Skipping - thread is too old (>1 year)');
         stats.filtered_out++;
+        const ip = inspectedPosts.find(p => p.threadId === threadId);
+        if (ip) { ip.status = 'skipped-ancient'; ip.age = threadAgeCategory; }
         continue;
       }
 
@@ -446,10 +457,20 @@ class BHWScraper {
       logger.info(`Thread stored in database (Lead ID: ${lead.id})`);
 
       // Qualify with AI (OpenClaw — GPT-4o mini)
+      // NOTE: AI is ONLY called here for genuinely NEW posts.
+      // Already-seen posts are caught by the DB batch check in PASS 2 and never reach here.
       logger.info('Qualifying thread with OpenClaw (GPT-4o mini)...');
       const qualification = await aiEngine.qualifyLead(basicData.title, description);
       
       logger.info(`Qualification result: ${qualification.qualified ? 'APPROVED' : 'REJECTED'} (Confidence: ${qualification.confidence}, Tier: ${qualification.tier})`);
+
+      // Track in inspectedPosts
+      const ip = inspectedPosts.find(p => p.threadId === threadId);
+      if (ip) {
+        ip.status = qualification.qualified ? 'new-approved' : 'new-rejected';
+        ip.confidence = qualification.confidence;
+        ip.age = threadAgeCategory;
+      }
 
       // Update lead with qualification
       await updateLeadQualification(
@@ -509,6 +530,7 @@ class BHWScraper {
 
     return {
       threads: threadsData,
+      inspectedPosts,
       stats: {
         totalFound: stats.total_found,
         filteredOut: stats.filtered_out,
@@ -535,11 +557,13 @@ class BHWScraper {
       let totalFound = 0;
       let totalAlreadyExisted = 0;
       let totalNewProcessed = 0;
+      let allInspectedPosts = [];
 
       for (let p = 1; p <= pages; p++) {
-        const { threads, stats: pageStats } = await this.scrapeListingWithDetails(p);
+        const { threads, inspectedPosts, stats: pageStats } = await this.scrapeListingWithDetails(p);
         logger.info(`Completed page ${p}: ${threads.length} new threads processed`);
         allThreads.push(...threads);
+        allInspectedPosts.push(...inspectedPosts);
         totalFound        += pageStats.totalFound;
         totalAlreadyExisted += pageStats.alreadyExisted;
         totalNewProcessed += pageStats.newProcessed;
@@ -564,6 +588,7 @@ class BHWScraper {
 
       return {
         threads: allThreads,
+        inspectedPosts: allInspectedPosts,
         cloudflareBlocked: this.cloudflareBlocked,
         totalFound,
         alreadyExisted: totalAlreadyExisted,
