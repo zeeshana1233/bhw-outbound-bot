@@ -151,8 +151,8 @@ async function startScraperAndOutreachLoop() {
     let scrapeResult = null;
     let newLeads     = [];
     try {
-      logger.info('\n📡  Scraping BHW for new threads (max 3 newest per cycle)…');
-      scrapeResult = await scraper.scrapeAndStore(1, 3);
+      logger.info('\n📡  Scraping BHW — checking top 3 posts on page 1…');
+      scrapeResult = await scraper.scrapeAndStore(1);
       newLeads     = scrapeResult.threads;
     } catch (err) {
       logger.error(`Scraper error: ${err.message}`);

@@ -301,29 +301,33 @@ class BHWScraper {
     }
 
     const $ = cheerio.load(html);
-    const threadCards = $('div.structItem--thread').toArray();
-    
+    const allCards = $('div.structItem--thread').toArray();
+
+    // ── Only look at the top 3 cards ────────────────────────────────────────
+    // BHW always lists newest posts first. New leads always arrive at the top.
+    // Checking only positions 0‑2 is sufficient — anything below cannot be
+    // newer than what we've already seen — and avoids scanning 20+ irrelevant
+    // threads every cycle.
+    const TOP_N    = 3;
+    const threadCards = allCards.slice(0, TOP_N);
+
     const stats = {
-      total_found: threadCards.length,
+      total_found: allCards.length,   // total on page (info only)
       filtered_out: 0,
       already_exists: 0,
       new_processed: 0
     };
 
-    logger.info(`Found ${stats.total_found} threads on page ${pageNum}`);
-
-    // Process all threads
-    const threadsToProcess = threadCards.length;
-    logger.info(`Processing all ${threadsToProcess} threads`);
+    logger.info(`Found ${stats.total_found} threads on page ${pageNum} — inspecting top ${TOP_N}`);
 
     // ============================================
-    // PASS 1: Extract all thread IDs (fast, no DB calls)
+    // PASS 1: Extract IDs from top 3 only (fast, no DB calls)
     // ============================================
-    logger.info('Step 1: Extracting all thread IDs from page...');
+    logger.info('Step 1: Extracting top-3 thread IDs...');
     const allThreadIds = [];
-    const threadDataMap = new Map(); // Map thread_id -> basic data
+    const threadDataMap = new Map();
 
-    for (let i = 0; i < threadsToProcess; i++) {
+    for (let i = 0; i < threadCards.length; i++) {
       const card = $(threadCards[i]);
 
       // Extract title and URL
@@ -377,24 +381,11 @@ class BHWScraper {
     stats.already_exists = existingThreadIds.length;
 
     // ============================================
-    // PASS 3: Process only NEW threads — sorted newest-first, capped at 3
+    // PASS 3: Process only NEW threads from the top 3
     // ============================================
-    logger.info('Step 3: Processing NEW threads only (newest first, max 3 per cycle)...');
-    let newThreadIds = allThreadIds.filter(id => !existingSet.has(id));
-
-    // Sort by postedAt descending so we always pick the most recent leads
-    newThreadIds.sort((a, b) => {
-      const dateA = threadDataMap.get(a)?.postedAt ?? new Date(0);
-      const dateB = threadDataMap.get(b)?.postedAt ?? new Date(0);
-      return dateB - dateA;
-    });
-
-    const cap = this.maxNewThreads || 3;
-    if (newThreadIds.length > cap) {
-      logger.info(`Capping at ${cap} newest threads (found ${newThreadIds.length} new)`);
-      newThreadIds = newThreadIds.slice(0, cap);
-    }
-    logger.info(`${newThreadIds.length} NEW thread(s) to process this cycle`);
+    logger.info('Step 3: Processing NEW threads from top-3...');
+    const newThreadIds = allThreadIds.filter(id => !existingSet.has(id));
+    logger.info(`${newThreadIds.length} NEW thread(s) to process this cycle (out of top ${TOP_N} checked)`);
 
     const threadsData = [];
     let processedCount = 0;
@@ -532,10 +523,8 @@ class BHWScraper {
   /**
    * Main scraping function
    * @param {number} pages - Number of pages to scrape
-   * @param {number|null} maxNewThreads - Max new threads to process (null = unlimited)
    */
-  async scrapeAndStore(pages = 1, maxNewThreads = null) {
-    this.maxNewThreads = maxNewThreads;
+  async scrapeAndStore(pages = 1) {
     logger.info(`Starting BHW scraper for ${pages} page(s)...`);
     
     try {
