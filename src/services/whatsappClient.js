@@ -62,8 +62,7 @@ function buildClient() {
       ],
     },
     webVersionCache: {
-      type: 'remote',
-      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1017054235-alpha/index.html'
+      type: 'none',
     }
   });
 
