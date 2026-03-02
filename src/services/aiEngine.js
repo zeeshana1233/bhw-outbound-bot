@@ -220,14 +220,19 @@ export async function generateCommentPitch(title, description, pitchAngle, poste
   const functionInstructions = `Write a comment pitch for the BHW thread below.
 
 RULES FOR THIS COMMENT:
-  • This is a PUBLIC forum comment, not a DM. Do not write "Hey I sent you a DM" unless you are also sending one.
-  • No links, no Telegram handles, no website URLs — the forum signature handles that.
+  • This is a PUBLIC forum comment, not a DM.
+  • ABSOLUTELY NO Telegram usernames, handles, links, or any contact details in the comment body — not even hinted at. The DM handles contact info.
+  • No other links, no website URLs — the forum signature handles that.
   • No markdown — plain text only. BHW forum renders plain text; asterisks and hashes appear literally.
   • ${usernameRule}
-  • Roughly 6 out of 10 comments mention demo videos. Vary it naturally.
-  • Roughly 7 out of 10 mention DM/PM. Vary it.
-  • Never use the exact same opening line twice. Vary the structure.
+  • Vary the structure and opening — never use the exact same opener twice.
   • Sound like a human developer who happened to read the post, not a sales rep.
+  • REQUIRED CLOSING LINE: The very last line of the comment MUST naturally mention that you have sent them a DM and dropped your contact/details there. Vary the wording each time — examples:
+      "I've sent you a DM with more details."
+      "Dropped you a DM — my contact details are in there."
+      "Sent you a PM with some examples and my contact info."
+      "Check your DMs — I've sent over some demos and how to reach me."
+    Keep it short and natural. Never write your Telegram handle directly in the comment.
 
 REAL COMMENT OPENERS ZEE HAS USED (rotate style, do not copy verbatim):
   "I can help you out with this."

@@ -74,6 +74,13 @@ async function processQualifiedLeads() {
         continue;
       }
 
+      // Duplicate guard: already commented on this thread? (DB query already filters,
+      // but guard here catches any race between two loop invocations)
+      if (lead.commented === true) {
+        logger.info(`  ⏭  Already commented on lead #${lead.id} — skipping`);
+        continue;
+      }
+
       const commentResult = await generateAndPostComment(lead, { dryRun: botState.isDryRun() });
       if (!commentResult.success) {
         logger.warn(`  Comment failed — skipping DM for lead #${lead.id}`);
@@ -81,9 +88,14 @@ async function processQualifiedLeads() {
       }
       commentsSent++;
 
+      let dmText = null;
+
       // GAP-02: Only DM posters on fresh threads (<30 days)
       if (!shouldSendDM(ageCategory)) {
         logger.info(`  ⏭  Skipping DM — thread is "${ageCategory}" (DMs for fresh threads only)`);
+
+      } else if (lead.dm_sent === true) {
+        logger.info(`  ⏭  Already sent DM to lead #${lead.id} — skipping`);
 
       } else if (dmsSent >= dmCap) {
         logger.warn(`  ⛔  DM cap (${dmCap}) reached — skipping DM for lead #${lead.id}`);
@@ -96,8 +108,40 @@ async function processQualifiedLeads() {
         await sleep(pauseMs);
 
         // Step 2 — DM the poster
-        await generateAndSendDM(lead, { dryRun: botState.isDryRun() });
-        dmsSent++;
+        const dmResult = await generateAndSendDM(lead, { dryRun: botState.isDryRun() });
+        if (dmResult.success) {
+          dmText = dmResult.dmText;
+          dmsSent++;
+        }
+      }
+
+      // ── WA full outreach report ───────────────────────────────────────
+      // Fires after comment (and DM if sent) — gives full visibility
+      try {
+        const reportLines = [
+          `🎯 *Outreach Complete!*`,
+          '',
+          `📌 *Post:* "${lead.title}"`,
+          `🔗 ${lead.thread_url}`,
+          `👤 Poster: @${lead.poster_username || 'unknown'}  |  Age: ${ageCategory}`,
+          `🤖 AI Score: ${Math.round((lead.niche_match_score || 0))}%`,
+          '',
+          `💬 *Comment posted:*`,
+          commentResult.commentText || '(text not available)',
+        ];
+
+        if (dmText) {
+          reportLines.push('');
+          reportLines.push(`📩 *DM sent:*`);
+          reportLines.push(dmText);
+        } else {
+          reportLines.push('');
+          reportLines.push(`📩 DM: scheduled (fires after ~15-30 min human gap)`);
+        }
+
+        await alerts.sendRawAlert(reportLines.join('\n')).catch(() => {});
+      } catch (alertErr) {
+        logger.warn(`WA outreach report failed: ${alertErr.message}`);
       }
 
     } catch (err) {
@@ -170,13 +214,25 @@ async function startScraperAndOutreachLoop() {
       ].join('\n')).catch(() => {});
     }
 
-    // ── WhatsApp status ping after every run ─────────────────────────
-    if (scrapeResult) {
+    // ── WhatsApp status ping — only fires when new jobs are found ───────
+    if (scrapeResult?.cloudflareBlocked) {
+      await alerts.sendRawAlert([
+        `⚠️ *CLOUDFLARE BLOCK* | Run #${runCount} | ${runTs}`,
+        '',
+        'BHW returned a Cloudflare challenge — posts could not be loaded.',
+        '',
+        `⏭ Auto-retrying in ~${nextMinStr} min`,
+        '⚠️ If this repeats, the server IP may be rate-limited by BHW.',
+      ].join('\n')).catch(() => {});
+
+    } else if (scrapeResult && scrapeResult.newProcessed > 0) {
+      // Only ping when there are actually new posts worth reporting
       const statusIcon = (s) => {
         if (s === 'seen')            return '🔄';
         if (s === 'new-approved')    return '✅';
         if (s === 'new-rejected')    return '❌';
         if (s === 'skipped-ancient') return '⏳';
+        if (s === 'skipped-pinned')  return '📌';
         return '❓';
       };
 
@@ -186,52 +242,28 @@ async function startScraperAndOutreachLoop() {
                     : p.status === 'new-approved'    ? `AI APPROVED (${Math.round((p.confidence || 0) * 100)}%)`
                     : p.status === 'new-rejected'    ? `AI rejected (${Math.round((p.confidence || 0) * 100)}%)`
                     : p.status === 'skipped-ancient' ? 'Skipped — too old'
+                    : p.status === 'skipped-pinned'  ? 'Skipped — pinned'
                     : 'Pending';
         return `${icon} ${i + 1}. "${p.title?.substring(0, 50)}" — ${label}`;
       });
 
-      if (scrapeResult.cloudflareBlocked) {
-        await alerts.sendRawAlert([
-          `⚠️ *CLOUDFLARE BLOCK* | Run #${runCount} | ${runTs}`,
-          '',
-          'BHW returned a Cloudflare challenge — posts could not be loaded.',
-          '',
-          `⏭ Auto-retrying in ~${nextMinStr} min`,
-          '⚠️ If this repeats, the server IP may be rate-limited by BHW.',
-        ].join('\n')).catch(() => {});
-
-      } else {
-        const hasNew = scrapeResult.newProcessed > 0;
-        const lines = [
-          `🔎 *Scraper Run #${runCount}* | ${runTs}`,
-          '',
-          `📊 Page total: ${scrapeResult.totalFound} posts  |  Checking: top 5`,
-          '',
-          '*Top 5 posts checked:*',
-          ...postLines,
-          '',
-        ];
-
-        if (hasNew) {
-          lines.push(`🆕 New this run: ${scrapeResult.newProcessed}  |  ✅ AI approved: ${scrapeResult.approved}  |  ❌ Rejected: ${scrapeResult.rejected}`);
-        } else {
-          lines.push(`🔄 All top-5 already tracked — bot is healthy`);
-        }
-
-        lines.push('');
-        lines.push(`⏭ Next run in ~${nextMinStr} min`);
-
-        await alerts.sendRawAlert(lines.join('\n')).catch(() => {});
-      }
+      await alerts.sendRawAlert([
+        `🆕 *New Job Found! Run #${runCount}* | ${runTs}`,
+        '',
+        `📊 Page: ${scrapeResult.totalFound} posts  |  Checked: top 5`,
+        '',
+        '*Top 5 posts:*',
+        ...postLines,
+        '',
+        `✅ AI approved: ${scrapeResult.approved}  |  ❌ Rejected: ${scrapeResult.rejected}`,
+        '',
+        `⏭ Starting outreach now…`,
+      ].join('\n')).catch(() => {});
     }
+    // If nothing new — stay silent (no noise on every cycle)
 
-    // ── Outreach DISABLED for 24h scraper stability test ─────────────
-    // Set SCRAPER_TEST_MODE=false in .env to re-enable comments + DMs.
-    const scraperTestMode = process.env.SCRAPER_TEST_MODE !== 'false';
-    if (scraperTestMode) {
-      const newQualified = newLeads.filter(t => t.qualified);
-      logger.info(`\n  🧪  SCRAPER TEST MODE — outreach skipped (${newQualified.length} qualified leads stored, no comments/DMs sent)`);
-    } else {
+    // ── Outreach — always live ────────────────────────────────────────
+    if (scrapeResult && !scrapeResult.cloudflareBlocked) {
       const newQualified = newLeads.filter(t => t.qualified);
       if (newQualified.length > 0) {
         logger.info(`\n  📬  ${newQualified.length} newly qualified — starting outreach immediately`);
@@ -294,26 +326,25 @@ async function main() {
     await initDatabase();
     logger.info('✅  Database connected\n');
 
-    // Inbox monitor and follow-up run on their own independent timers
-    startInboxMonitor({ dryRun: DRY_RUN });
-    startFollowUpSystem({ dryRun: DRY_RUN });
-    startCommunityCommenter({ dryRun: DRY_RUN });
-    scheduleDailyReport();
-    bhwSession.startHealthCheck();
-    await initWhatsApp();     // QR scan once → session auto-saved to .wwebjs_auth/
-    startCommandCenter();     // WhatsApp group two-way command interface
+    // ACTIVE MODULE: Scraper + comment + DM only
+    // All other modules disabled until first lead is converted
+    // startInboxMonitor({ dryRun: DRY_RUN });
+    // startFollowUpSystem({ dryRun: DRY_RUN });
+    // startCommunityCommenter({ dryRun: DRY_RUN });
+    // scheduleDailyReport();
+    // bhwSession.startHealthCheck();
+    await initWhatsApp();
+    startCommandCenter();
 
     // Scraper + immediate outreach — one unified loop
     startScraperAndOutreachLoop();
 
-    logger.info('\n✅  All systems operational');
-    logger.info('   • Scrape + outreach — every 2 min; comment+DM fires right after each scrape');
-    logger.info('   • Inbox monitor     — reply check every 1–2 hr random');
-    logger.info('   • Follow-ups        — due-check every 30–90 min random');
-    logger.info('   • Daily report      — WhatsApp summary every day at 09:00 AM');
-    logger.info('   • Session health    — verified every 30 min; WhatsApp alert if expired');
-    logger.info('   • Community comments — organic BHW replies every 4–6h (max 3/run)');
-    logger.info('   • Command center    — WhatsApp group (send \'help\' in your group)\n');
+    logger.info('\n✅  Bot running in full pipeline mode');
+    logger.info('   • Scrape BHW every 10–20 min');
+    logger.info('   • Comment posted immediately on new approved posts');
+    logger.info('   • DM sent ~15-30 min after comment (human gap)');
+    logger.info('   • WhatsApp alert when new job found + after each outreach');
+    logger.info('   • All other modules disabled (inbox/follow-up/community/daily report)\n');
 
   } catch (error) {
     logger.error('❌  Fatal error starting bot:', error);

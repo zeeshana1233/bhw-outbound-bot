@@ -343,6 +343,14 @@ class BHWScraper {
       const threadId = extractThreadId(fullUrl) || fullUrl;
       const title = this.cleanText(titleTag.text().trim());
 
+      // Skip pinned/rules posts — they are permanent fixtures, never jobs
+      if (/^\[RULE|^\[STICKY|^\[PINNED|^\[OFFICIAL|^\[IMPORTANT|^\[MODERATOR/i.test(title)) {
+        logger.info(`  Skipping pinned post: "${title.substring(0, 60)}"`);
+        inspectedPosts.push({ threadId, title, url: fullUrl, status: 'skipped-pinned' });
+        stats.filtered_out++;
+        continue;
+      }
+
       // Extract author
       const authorTag = card.find('.structItem-minor .username, .structItem-parts .username').first();
       const author = authorTag.length > 0 ? this.cleanText(authorTag.text().trim()) : null;
