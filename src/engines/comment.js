@@ -307,15 +307,47 @@ export async function postComment(lead, commentText, opts = {}) {
 
   await smoothScrollToElement(page, replySelector);
 
-  // ── 6. Click the reply box ─────────────────────────────────────────
-  logger.info('Step 6/10 — Clicking into reply box...');
+  // ── 6. Clear + click the reply box ─────────────────────────────────
+  logger.info('Step 6/10 — Clearing any draft and clicking reply box...');
   await sleep(randomDelay(400, 900));
-  await moveMouseAndClick(page, replySelector);
-  await sleep(randomDelay(300, 700));
 
-  // Ensure focus
+  // Scroll the reply box fully into view before interacting
+  await page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, replySelector);
+  await sleep(randomDelay(600, 1000));
+
+  // Click to focus
+  await page.click(replySelector).catch(() => {});
+  await sleep(randomDelay(300, 600));
   await page.focus(replySelector);
-  await sleep(randomDelay(200, 500));
+  await sleep(randomDelay(200, 400));
+
+  // Clear any pre-existing draft content (Select All → Delete)
+  await page.keyboard.down('Control');
+  await page.keyboard.press('KeyA');
+  await page.keyboard.up('Control');
+  await sleep(randomDelay(150, 300));
+  await page.keyboard.press('Backspace');
+  await sleep(randomDelay(200, 400));
+
+  // Also clear via DOM for Froala contenteditable editors
+  await page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return;
+    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+      el.value = '';
+    } else {
+      el.innerHTML = '';
+      el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    }
+  }, replySelector);
+  await sleep(randomDelay(300, 600));
+
+  // Click again to re-focus after clearing
+  await page.click(replySelector).catch(() => {});
+  await sleep(randomDelay(200, 400));
 
   // ── 7. Type comment ────────────────────────────────────────────────
   logger.info('Step 7/10 — Typing comment (human speed)...');
@@ -347,29 +379,36 @@ export async function postComment(lead, commentText, opts = {}) {
     'button[type="submit"]',
   ];
 
+  // Scroll fully to bottom so the Post Reply button is in viewport
+  await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+  await sleep(randomDelay(800, 1500));
+
   let submitted = false;
   for (const sel of SUBMIT_SELECTORS) {
     const btn = await page.$(sel);
     if (btn) {
-      await smoothScrollToElement(page, sel);
-      await sleep(randomDelay(300, 700));
+      // Scroll button into centre of viewport
+      await page.evaluate((s) => {
+        const el = document.querySelector(s);
+        if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }, sel);
+      await sleep(randomDelay(500, 900));
+
+      // Use Puppeteer's native page.click() — it handles scroll + offset automatically
       try {
-        await moveMouseAndClick(page, sel);
+        await page.click(sel);
         submitted = true;
-        logger.info(`          Clicked submit via mouse: ${sel}`);
-      } catch (mouseErr) {
-        // Bounding box unavailable — fall back to JS click
-        logger.warn(`          Mouse click failed (${mouseErr.message}) — trying JS click`);
+        logger.info(`          Clicked submit (page.click): ${sel}`);
+      } catch (clickErr) {
+        // DOM fallback
+        logger.warn(`          page.click failed (${clickErr.message}) — using DOM click`);
         try {
-          await page.evaluate((s) => {
-            const el = document.querySelector(s);
-            if (el) el.click();
-          }, sel);
+          await page.$eval(sel, el => el.click());
           submitted = true;
-          logger.info(`          Clicked submit via JS: ${sel}`);
-        } catch (jsErr) {
-          logger.warn(`          JS click also failed: ${jsErr.message}`);
-          continue; // try next selector
+          logger.info(`          Clicked submit (DOM eval): ${sel}`);
+        } catch (evalErr) {
+          logger.warn(`          DOM click also failed: ${evalErr.message}`);
+          continue;
         }
       }
       break;
@@ -377,10 +416,9 @@ export async function postComment(lead, commentText, opts = {}) {
   }
 
   if (!submitted) {
-    // Last-resort: press Enter from within the textarea
-    logger.warn('Submit button not found — trying keyboard Enter...');
+    logger.warn('No submit button found — using Ctrl+Enter keyboard fallback...');
     await page.focus(replySelector);
-    await sleep(randomDelay(200, 500));
+    await sleep(randomDelay(200, 400));
     await page.keyboard.down('Control');
     await page.keyboard.press('Enter');
     await page.keyboard.up('Control');

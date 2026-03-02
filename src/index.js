@@ -101,8 +101,8 @@ async function processQualifiedLeads() {
         logger.warn(`  ⛔  DM cap (${dmCap}) reached — skipping DM for lead #${lead.id}`);
 
       } else {
-        // GAP-01: Human pause between comment and DM — 15 to 30 minutes
-        const pauseMs  = randomDelay(15 * 60 * 1000, 30 * 60 * 1000);
+        // Short human pause between comment and DM — 2 to 4 minutes
+        const pauseMs  = randomDelay(2 * 60 * 1000, 4 * 60 * 1000);
         const pauseMin = Math.round(pauseMs / 60000);
         logger.info(`  ⏳  Pausing ~${pauseMin} min before DM (human gap)…`);
         await sleep(pauseMs);

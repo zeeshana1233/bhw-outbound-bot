@@ -331,14 +331,42 @@ export async function sendDM(lead, dmText, opts = {}) {
     throw new Error('Could not locate message editor on the conversation compose page.');
   }
 
-  // ── 6. Click into message editor ───────────────────────────────────
-  logger.info('Step 6/10 — Clicking message editor...');
-  await smoothScrollToElement(page, editorSelector);
-  await sleep(randomDelay(500, 1000));
-  await moveMouseAndClick(page, editorSelector);
-  await sleep(randomDelay(300, 700));
+  // ── 6. Clear + click message editor ────────────────────────────────
+  logger.info('Step 6/10 — Clearing any draft and clicking editor...');
+
+  await page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, editorSelector);
+  await sleep(randomDelay(600, 1000));
+
+  await page.click(editorSelector).catch(() => {});
+  await sleep(randomDelay(300, 600));
   await page.focus(editorSelector);
-  await sleep(randomDelay(200, 500));
+  await sleep(randomDelay(200, 400));
+
+  // Clear any pre-filled content
+  await page.keyboard.down('Control');
+  await page.keyboard.press('KeyA');
+  await page.keyboard.up('Control');
+  await sleep(randomDelay(150, 300));
+  await page.keyboard.press('Backspace');
+  await sleep(randomDelay(200, 400));
+
+  await page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return;
+    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+      el.value = '';
+    } else {
+      el.innerHTML = '';
+      el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    }
+  }, editorSelector);
+  await sleep(randomDelay(300, 500));
+
+  await page.click(editorSelector).catch(() => {});
+  await sleep(randomDelay(200, 400));
 
   // ── 7. Type the DM ─────────────────────────────────────────────────
   logger.info('Step 7/10 — Typing DM (human speed)...');
@@ -367,23 +395,43 @@ export async function sendDM(lead, dmText, opts = {}) {
     'button[type="submit"]',
   ];
 
+  // Scroll to bottom so the Send button is in viewport
+  await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+  await sleep(randomDelay(800, 1500));
+
   let submitted = false;
   for (const sel of SUBMIT_SELECTORS) {
     const btn = await page.$(sel);
     if (btn) {
-      await smoothScrollToElement(page, sel);
-      await sleep(randomDelay(300, 700));
-      await moveMouseAndClick(page, sel);
-      submitted = true;
-      logger.info(`           Clicked send: ${sel}`);
+      await page.evaluate((s) => {
+        const el = document.querySelector(s);
+        if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }, sel);
+      await sleep(randomDelay(500, 900));
+
+      try {
+        await page.click(sel);
+        submitted = true;
+        logger.info(`           Clicked send (page.click): ${sel}`);
+      } catch (clickErr) {
+        logger.warn(`           page.click failed — using DOM click: ${clickErr.message}`);
+        try {
+          await page.$eval(sel, el => el.click());
+          submitted = true;
+          logger.info(`           Clicked send (DOM eval): ${sel}`);
+        } catch (evalErr) {
+          logger.warn(`           DOM click also failed: ${evalErr.message}`);
+          continue;
+        }
+      }
       break;
     }
   }
 
   if (!submitted) {
-    logger.warn('Send button not found — trying keyboard Enter...');
+    logger.warn('Send button not found — using Ctrl+Enter keyboard fallback...');
     await page.focus(editorSelector);
-    await sleep(randomDelay(200, 500));
+    await sleep(randomDelay(200, 400));
     await page.keyboard.down('Control');
     await page.keyboard.press('Enter');
     await page.keyboard.up('Control');
