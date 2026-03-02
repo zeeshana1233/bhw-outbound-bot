@@ -464,7 +464,8 @@ export async function sendDM(lead, dmText, opts = {}) {
   logger.info('Step 10/10 — Verifying send + updating database...');
 
   const currentUrl = page.url();
-  const conversationMatch = currentUrl.match(/\/conversations\/(\d+)/);
+  // BHW uses /direct-messages/ or /conversations/ depending on XF version/config
+  const conversationMatch = currentUrl.match(/\/(?:conversations|direct-messages)\/[^/]*\.?(\d+)\/?/);
   const conversationUrl   = conversationMatch ? currentUrl : null;
   const bhwConversationId = conversationMatch ? conversationMatch[1] : null;
 
