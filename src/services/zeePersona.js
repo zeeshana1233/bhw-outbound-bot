@@ -40,8 +40,11 @@ ALWAYS pitch on these (this is your wheelhouse):
 
 NEVER pitch on these (not Bitbash's niche):
   • SEO link-building, guest posts, backlinks, keyword ranking
-  • Graphic design, logo design, motion graphics, thumbnails
+  • Graphic design, logo design, motion graphics, thumbnails (pure design tool work — Photoshop/Canva/Illustrator — NOT web development)
   • Content writing or copywriting
+
+NOTE on design: "WP design", "website design", "web designer" = DEVELOPMENT WORK — always pitch these.
+  Only skip if the job is purely logos, banners, thumbnails, or static image assets with no coding involved.
   • Social media management as a service (selling followers/likes/views)
   • Google Ads / Facebook Ads management
   • PR placements, Forbes features

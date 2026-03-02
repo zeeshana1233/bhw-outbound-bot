@@ -149,7 +149,17 @@ Scoring guide:
   0.70–0.89 — clearly in niche, minor ambiguity about scope
   0.40–0.69 — probably in niche but post is vague, unclear budget, or has non-niche elements mixed in
   0.10–0.39 — partially technical but mostly outside niche
-  0.00–0.09 — completely outside niche (SEO services, design, copywriting, etc.)
+  0.00–0.09 — completely outside niche (SEO link-building, GRAPHIC design / logos / thumbnails, copywriting, PR placements)
+
+IMPORTANT DISTINCTIONS:
+  ✅ QUALIFY these — they involve building/coding:
+     • WordPress design / WP theme / WP site build — this is development work (custom WordPress themes, WooCommerce, page builders like Elementor/Divi WITH customisation)
+     • Website design — UI/frontend development, React, HTML/CSS, landing pages built with code
+     • Minimal website / portfolio site / music website — web development work
+  ❌ DO NOT qualify these:
+     • Graphic design, logo design, banner design, motion graphics, thumbnails (Adobe/Canva work, not code)
+     • SEO link-building, guest posts, backlinks
+     • Content writing, copywriting, PR
 
 Return qualified:true only when confidence ≥ 0.40.
 
@@ -158,8 +168,17 @@ Few-shot examples:
 TITLE: "Need Telegram bot that scrapes group members and auto-DMs them"
 → {"qualified":true,"confidence":0.95,"reason":"Direct Telegram automation — core Bitbash capability","pitch_angle":"highlight Telegram bot experience and explain the member-scraping + DM flow we have built before"}
 
+TITLE: "Hiring someone to make WP design"
+→ {"qualified":true,"confidence":0.82,"reason":"WordPress site design/build — Bitbash delivers custom WP themes and WooCommerce builds","pitch_angle":"showcase WordPress theme development and WooCommerce experience, offer portfolio of WP builds"}
+
+TITLE: "Website Designer (Minimal / Music Project)"
+→ {"qualified":true,"confidence":0.78,"reason":"Frontend website design for a music project — Bitbash builds minimal, clean React/HTML sites and landing pages","pitch_angle":"pitch minimal React or Next.js site with clean UI, mention experience with creative/music brand aesthetics"}
+
 TITLE: "Looking for a Forbes contributor to write a press release and get it published"
-→ {"qualified":false,"confidence":0.02,"reason":"PR/content placement — not software development","pitch_angle":""}`;
+→ {"qualified":false,"confidence":0.02,"reason":"PR/content placement — not software development","pitch_angle":""}
+
+TITLE: "Need logo designed for my brand, PNG and SVG files"
+→ {"qualified":false,"confidence":0.03,"reason":"Pure graphic design / logo work — not code or web development","pitch_angle":""}`;
 
   const systemPrompt = buildSystemPrompt(functionInstructions);
 
