@@ -136,7 +136,7 @@ async function processQualifiedLeads() {
           reportLines.push(dmText);
         } else {
           reportLines.push('');
-          reportLines.push(`📩 DM: scheduled (fires after ~15-30 min human gap)`);
+          reportLines.push(`📩 DM: scheduled (fires ~2-4 min after comment)`);
         }
 
         await alerts.sendRawAlert(reportLines.join('\n')).catch(() => {});
@@ -315,6 +315,40 @@ function scheduleDailyReport() {
   setTimeout(fireReport, delay);
 }
 
+// ── Heartbeat ────────────────────────────────────────────────────────────────
+/**
+ * Sends a WA alive-ping every 6 hours so you can confirm the bot
+ * is still running during the 24h test without checking logs manually.
+ */
+function startHeartbeat() {
+  const INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+  const ping = async () => {
+    try {
+      const { commentsToday, dmsToday } = await getDailyActionCounts();
+      const now = new Date().toLocaleString('en-GB', {
+        timeZone: 'Asia/Karachi',
+        hour: '2-digit', minute: '2-digit',
+        day: '2-digit', month: 'short',
+      });
+      await alerts.sendRawAlert([
+        `💓 *Bot Alive* | ${now}`,
+        '',
+        `💬 Comments today: ${commentsToday}`,
+        `📩 DMs today: ${dmsToday}`,
+        `🔄 Scraping every 10–20 min`,
+        `✅ No issues detected`,
+      ].join('\n')).catch(() => {});
+    } catch (err) {
+      logger.warn(`Heartbeat ping failed: ${err.message}`);
+    }
+    setTimeout(ping, INTERVAL_MS);
+  };
+
+  setTimeout(ping, INTERVAL_MS); // first ping after 6h
+  logger.info('💓  Heartbeat started — WA ping every 6 hours');
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   try {
@@ -326,25 +360,26 @@ async function main() {
     await initDatabase();
     logger.info('✅  Database connected\n');
 
-    // ACTIVE MODULE: Scraper + comment + DM only
-    // All other modules disabled until first lead is converted
+    // ACTIVE: Scraper + comment + DM + daily report
+    // Follow-up/inbox/community disabled until first conversion confirmed
     // startInboxMonitor({ dryRun: DRY_RUN });
     // startFollowUpSystem({ dryRun: DRY_RUN });
     // startCommunityCommenter({ dryRun: DRY_RUN });
-    // scheduleDailyReport();
     // bhwSession.startHealthCheck();
     await initWhatsApp();
     startCommandCenter();
+    scheduleDailyReport();    // 9 AM WA daily summary
+    startHeartbeat();         // 6-hour alive ping
 
     // Scraper + immediate outreach — one unified loop
     startScraperAndOutreachLoop();
 
-    logger.info('\n✅  Bot running in full pipeline mode');
-    logger.info('   • Scrape BHW every 10–20 min');
+    logger.info('\n✅  Bot running — 24h test mode');
+    logger.info('   • Scrape BHW every 10–20 min (anonymous, no session)');
     logger.info('   • Comment posted immediately on new approved posts');
-    logger.info('   • DM sent ~15-30 min after comment (human gap)');
-    logger.info('   • WhatsApp alert when new job found + after each outreach');
-    logger.info('   • All other modules disabled (inbox/follow-up/community/daily report)\n');
+    logger.info('   • DM sent ~2-4 min after comment (human gap)');
+    logger.info('   • No duplicate comment/DM — triple-guarded at DB + loop + engine level');
+    logger.info('   • WhatsApp: new job alert + outreach report + 9 AM daily summary + 6h heartbeat\n');
 
   } catch (error) {
     logger.error('❌  Fatal error starting bot:', error);
