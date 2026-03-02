@@ -353,9 +353,25 @@ export async function postComment(lead, commentText, opts = {}) {
     if (btn) {
       await smoothScrollToElement(page, sel);
       await sleep(randomDelay(300, 700));
-      await moveMouseAndClick(page, sel);
-      submitted = true;
-      logger.info(`          Clicked submit: ${sel}`);
+      try {
+        await moveMouseAndClick(page, sel);
+        submitted = true;
+        logger.info(`          Clicked submit via mouse: ${sel}`);
+      } catch (mouseErr) {
+        // Bounding box unavailable — fall back to JS click
+        logger.warn(`          Mouse click failed (${mouseErr.message}) — trying JS click`);
+        try {
+          await page.evaluate((s) => {
+            const el = document.querySelector(s);
+            if (el) el.click();
+          }, sel);
+          submitted = true;
+          logger.info(`          Clicked submit via JS: ${sel}`);
+        } catch (jsErr) {
+          logger.warn(`          JS click also failed: ${jsErr.message}`);
+          continue; // try next selector
+        }
+      }
       break;
     }
   }
