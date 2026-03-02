@@ -307,45 +307,47 @@ export async function postComment(lead, commentText, opts = {}) {
 
   await smoothScrollToElement(page, replySelector);
 
-  // ── 6. Clear + click the reply box ─────────────────────────────────
-  logger.info('Step 6/10 — Clearing any draft and clicking reply box...');
+  // ── 6. Activate Froala editor + clear any draft ─────────────────────
+  logger.info('Step 6/10 — Activating editor and clearing draft...');
   await sleep(randomDelay(400, 900));
 
-  // Scroll the reply box fully into view before interacting
+  // Scroll into view
   await page.evaluate((sel) => {
     const el = document.querySelector(sel);
     if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }, replySelector);
-  await sleep(randomDelay(600, 1000));
+  await sleep(randomDelay(800, 1200));
 
-  // Click to focus
-  await page.click(replySelector).catch(() => {});
-  await sleep(randomDelay(300, 600));
-  await page.focus(replySelector);
-  await sleep(randomDelay(200, 400));
-
-  // Clear any pre-existing draft content (Select All → Delete)
-  await page.keyboard.down('Control');
-  await page.keyboard.press('KeyA');
-  await page.keyboard.up('Control');
-  await sleep(randomDelay(150, 300));
-  await page.keyboard.press('Backspace');
-  await sleep(randomDelay(200, 400));
-
-  // Also clear via DOM for Froala contenteditable editors
+  // Activate the Froala editor with full mouse event sequence
+  // (el.click() alone doesn't trigger Froala's focus handler)
   await page.evaluate((sel) => {
     const el = document.querySelector(sel);
     if (!el) return;
-    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
-      el.value = '';
-    } else {
-      el.innerHTML = '';
-      el.dispatchEvent(new InputEvent('input', { bubbles: true }));
-    }
+    el.focus();
+    ['mouseenter', 'mousedown', 'mouseup', 'click'].forEach(type =>
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }))
+    );
+    // Set Froala's empty state — must be <p><br></p> NOT empty string
+    // (empty string breaks Froala's cursor tracking)
+    el.innerHTML = '<p><br></p>';
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    el.dispatchEvent(new InputEvent('change', { bubbles: true }));
   }, replySelector);
-  await sleep(randomDelay(300, 600));
+  await sleep(randomDelay(500, 900));
 
-  // Click again to re-focus after clearing
+  // Puppeteer-level focus so subsequent keyboard events go to this element
+  await page.click(replySelector).catch(() => {});
+  await page.focus(replySelector);
+  await sleep(randomDelay(300, 500));
+
+  // Keyboard clear (belt-and-suspenders)
+  await page.keyboard.down('Control');
+  await page.keyboard.press('a');
+  await page.keyboard.up('Control');
+  await page.keyboard.press('Delete');
+  await sleep(randomDelay(200, 400));
+
+  // Click once more to ensure cursor is inside the editor
   await page.click(replySelector).catch(() => {});
   await sleep(randomDelay(200, 400));
 
@@ -353,6 +355,45 @@ export async function postComment(lead, commentText, opts = {}) {
   logger.info('Step 7/10 — Typing comment (human speed)...');
   await humanTypeInBrowser(page, commentText);
   logger.info('          Typing complete.');
+
+  // ── 7.5 Sync Froala → hidden textarea (CRITICAL) ───────────────────
+  // Froala maintains a hidden <textarea> that gets submitted with the form.
+  // Keyboard events may not fully sync the visual editor → hidden input.
+  // We force-sync here to guarantee the form receives the text.
+  const syncResult = await page.evaluate((sel, text) => {
+    const ed = document.querySelector(sel);
+    if (!ed) return 'no_editor';
+
+    // Make sure the visual editor actually has content
+    if (!ed.textContent.trim()) {
+      ed.innerHTML = '<p>' + text.replace(/\n/g, '<br>') + '</p>';
+    }
+    const html = ed.innerHTML;
+
+    const form = ed.closest('form');
+    if (!form) return 'no_form';
+
+    // Sync to every textarea and hidden input that looks like a message field
+    let synced = 0;
+    form.querySelectorAll('textarea, input[type="hidden"]').forEach(el => {
+      const name = (el.name || el.id || '').toLowerCase();
+      if (name.includes('message') || name.includes('body') || name.includes('content')) {
+        el.value = html;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        synced++;
+      }
+    });
+    // Also hit any display:none textarea (Froala mirror input)
+    form.querySelectorAll('textarea').forEach(ta => {
+      if (getComputedStyle(ta).display === 'none' || ta.hidden) {
+        ta.value = html;
+        synced++;
+      }
+    });
+    return 'synced:' + synced;
+  }, replySelector, commentText);
+  logger.info(`          Editor sync: ${syncResult}`);
 
   // ── 8. Pre-submit pause ────────────────────────────────────────────
   logger.info('Step 8/10 — Pausing before submit (reviewing comment)...');
@@ -370,63 +411,57 @@ export async function postComment(lead, commentText, opts = {}) {
   // ── 9. Submit ──────────────────────────────────────────────────────
   logger.info('Step 9/10 — Submitting comment...');
 
-  // XenForo 2 "Post Reply" button selectors
-  const SUBMIT_SELECTORS = [
-    'button[data-xf-click="submit"]',
-    '.quickReply .button--primary',
-    'button.button--primary[type="submit"]',
-    'input[type="submit"][value*="Post"]',
-    'button[type="submit"]',
-  ];
-
-  // Scroll fully to bottom so the Post Reply button is in viewport
+  // Scroll to bottom so button is in DOM viewport
   await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
-  await sleep(randomDelay(800, 1500));
+  await sleep(randomDelay(1000, 1800));
 
-  let submitted = false;
-  for (const sel of SUBMIT_SELECTORS) {
-    const btn = await page.$(sel);
-    if (btn) {
-      // Scroll button into centre of viewport
-      await page.evaluate((s) => {
-        const el = document.querySelector(s);
-        if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      }, sel);
-      await sleep(randomDelay(500, 900));
-
-      // Use Puppeteer's native page.click() — it handles scroll + offset automatically
-      try {
-        await page.click(sel);
-        submitted = true;
-        logger.info(`          Clicked submit (page.click): ${sel}`);
-      } catch (clickErr) {
-        // DOM fallback
-        logger.warn(`          page.click failed (${clickErr.message}) — using DOM click`);
-        try {
-          await page.$eval(sel, el => el.click());
-          submitted = true;
-          logger.info(`          Clicked submit (DOM eval): ${sel}`);
-        } catch (evalErr) {
-          logger.warn(`          DOM click also failed: ${evalErr.message}`);
-          continue;
-        }
-      }
-      break;
+  // Submit via full synthetic MouseEvent sequence on the form's submit button.
+  // This is the most reliable method — el.click() skips XenForo's JS handler,
+  // but a full MouseEvent sequence triggers it properly.
+  const submitResult = await page.evaluate((sel) => {
+    const ed = document.querySelector(sel);
+    // Walk up from editor to find the containing form
+    let form = ed ? ed.closest('form') : null;
+    if (!form) {
+      // XenForo quick-reply form fallbacks
+      form = document.querySelector('.js-quickReply form') ||
+             document.querySelector('form.quickReply') ||
+             document.querySelector('form[action*="reply"]') ||
+             document.querySelector('form[action*="post"]') ||
+             document.querySelector('form[action*="thread"]');
     }
-  }
 
-  if (!submitted) {
-    logger.warn('No submit button found — using Ctrl+Enter keyboard fallback...');
-    await page.focus(replySelector);
-    await sleep(randomDelay(200, 400));
-    await page.keyboard.down('Control');
-    await page.keyboard.press('Enter');
-    await page.keyboard.up('Control');
-    submitted = true;
-  }
+    // Find the submit button within the form (or page)
+    const btn = form
+      ? (form.querySelector('[data-xf-click="submit"]') ||
+         form.querySelector('button[type="submit"]') ||
+         form.querySelector('input[type="submit"]'))
+      : (document.querySelector('button[data-xf-click="submit"]') ||
+         document.querySelector('button.button--primary[type="submit"]'));
 
-  // Wait for page to settle after submit
-  await sleep(randomDelay(3000, 6000));
+    if (btn) {
+      btn.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      // Full synthetic mouse event sequence — mimics a real user click
+      const opts = { bubbles: true, cancelable: true, view: window };
+      btn.dispatchEvent(new MouseEvent('mouseenter', opts));
+      btn.dispatchEvent(new MouseEvent('mousemove', opts));
+      btn.dispatchEvent(new MouseEvent('mousedown', opts));
+      btn.dispatchEvent(new MouseEvent('mouseup',   opts));
+      btn.dispatchEvent(new MouseEvent('click',     opts));
+      return 'btn_events:' + (btn.textContent.trim().slice(0, 30));
+    }
+
+    // Last resort: form.requestSubmit() — triggers native HTML5 submit with validation
+    if (form) {
+      try { form.requestSubmit(); return 'form_requestSubmit'; }
+      catch (e) { form.submit(); return 'form_submit'; }
+    }
+    return 'nothing_found';
+  }, replySelector);
+  logger.info(`          Submit: ${submitResult}`);
+
+  // Wait for XenForo to process + page to settle
+  await sleep(randomDelay(4000, 7000));
 
   // ── 10. Verify comment appeared ────────────────────────────────────
   logger.info('Step 10/10 — Verifying comment was posted...');

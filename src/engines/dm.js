@@ -331,39 +331,40 @@ export async function sendDM(lead, dmText, opts = {}) {
     throw new Error('Could not locate message editor on the conversation compose page.');
   }
 
-  // ── 6. Clear + click message editor ────────────────────────────────
-  logger.info('Step 6/10 — Clearing any draft and clicking editor...');
+  // ── 6. Activate Froala editor + clear any draft ────────────────────
+  logger.info('Step 6/10 — Activating editor and clearing draft...');
 
   await page.evaluate((sel) => {
     const el = document.querySelector(sel);
     if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }, editorSelector);
-  await sleep(randomDelay(600, 1000));
+  await sleep(randomDelay(800, 1200));
 
-  await page.click(editorSelector).catch(() => {});
-  await sleep(randomDelay(300, 600));
-  await page.focus(editorSelector);
-  await sleep(randomDelay(200, 400));
-
-  // Clear any pre-filled content
-  await page.keyboard.down('Control');
-  await page.keyboard.press('KeyA');
-  await page.keyboard.up('Control');
-  await sleep(randomDelay(150, 300));
-  await page.keyboard.press('Backspace');
-  await sleep(randomDelay(200, 400));
-
+  // Activate Froala with full mouse event sequence
   await page.evaluate((sel) => {
     const el = document.querySelector(sel);
     if (!el) return;
-    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
-      el.value = '';
-    } else {
-      el.innerHTML = '';
-      el.dispatchEvent(new InputEvent('input', { bubbles: true }));
-    }
+    el.focus();
+    ['mouseenter', 'mousedown', 'mouseup', 'click'].forEach(type =>
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }))
+    );
+    // Froala's correct empty state is <p><br></p> — NOT empty string
+    el.innerHTML = '<p><br></p>';
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    el.dispatchEvent(new InputEvent('change', { bubbles: true }));
   }, editorSelector);
+  await sleep(randomDelay(500, 900));
+
+  await page.click(editorSelector).catch(() => {});
+  await page.focus(editorSelector);
   await sleep(randomDelay(300, 500));
+
+  // Keyboard clear
+  await page.keyboard.down('Control');
+  await page.keyboard.press('a');
+  await page.keyboard.up('Control');
+  await page.keyboard.press('Delete');
+  await sleep(randomDelay(200, 400));
 
   await page.click(editorSelector).catch(() => {});
   await sleep(randomDelay(200, 400));
@@ -372,6 +373,38 @@ export async function sendDM(lead, dmText, opts = {}) {
   logger.info('Step 7/10 — Typing DM (human speed)...');
   await humanTypeInBrowser(page, dmText);
   logger.info('           Typing complete.');
+
+  // ── 7.5 Sync Froala → hidden textarea (CRITICAL) ───────────────────
+  // Froala maintains a hidden <textarea> that gets submitted with the form.
+  // Keyboard events may not fully sync the visual editor → hidden input.
+  // Force-sync here to guarantee the form receives the text.
+  const syncResult = await page.evaluate((sel, text) => {
+    const ed = document.querySelector(sel);
+    if (!ed) return 'no_editor';
+    if (!ed.textContent.trim()) {
+      ed.innerHTML = '<p>' + text.replace(/\n/g, '<br>') + '</p>';
+    }
+    const html = ed.innerHTML;
+    const form = ed.closest('form');
+    if (!form) return 'no_form';
+    let synced = 0;
+    form.querySelectorAll('textarea, input[type="hidden"]').forEach(el => {
+      const name = (el.name || el.id || '').toLowerCase();
+      if (name.includes('message') || name.includes('body') || name.includes('content')) {
+        el.value = html;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        synced++;
+      }
+    });
+    form.querySelectorAll('textarea').forEach(ta => {
+      if (getComputedStyle(ta).display === 'none' || ta.hidden) {
+        ta.value = html; synced++;
+      }
+    });
+    return 'synced:' + synced;
+  }, editorSelector, dmText);
+  logger.info(`           Editor sync: ${syncResult}`);
 
   // ── 8. Pre-submit pause ─────────────────────────────────────────────
   logger.info('Step 8/10 — Reviewing before send...');
@@ -387,56 +420,43 @@ export async function sendDM(lead, dmText, opts = {}) {
   // ── 9. Submit ───────────────────────────────────────────────────────
   logger.info('Step 9/10 — Sending DM...');
 
-  const SUBMIT_SELECTORS = [
-    'button.button--primary[type="submit"]',
-    'button[data-xf-click="submit"]',
-    '.formSubmitRow button.button--primary',
-    'input[type="submit"]',
-    'button[type="submit"]',
-  ];
-
-  // Scroll to bottom so the Send button is in viewport
   await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
-  await sleep(randomDelay(800, 1500));
+  await sleep(randomDelay(1000, 1800));
 
-  let submitted = false;
-  for (const sel of SUBMIT_SELECTORS) {
-    const btn = await page.$(sel);
-    if (btn) {
-      await page.evaluate((s) => {
-        const el = document.querySelector(s);
-        if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      }, sel);
-      await sleep(randomDelay(500, 900));
-
-      try {
-        await page.click(sel);
-        submitted = true;
-        logger.info(`           Clicked send (page.click): ${sel}`);
-      } catch (clickErr) {
-        logger.warn(`           page.click failed — using DOM click: ${clickErr.message}`);
-        try {
-          await page.$eval(sel, el => el.click());
-          submitted = true;
-          logger.info(`           Clicked send (DOM eval): ${sel}`);
-        } catch (evalErr) {
-          logger.warn(`           DOM click also failed: ${evalErr.message}`);
-          continue;
-        }
-      }
-      break;
+  const submitResult = await page.evaluate((sel) => {
+    const ed = document.querySelector(sel);
+    let form = ed ? ed.closest('form') : null;
+    if (!form) {
+      form = document.querySelector('form[action*="conversation"]') ||
+             document.querySelector('form[action*="add"]') ||
+             document.querySelector('form');
     }
-  }
+    const btn = form
+      ? (form.querySelector('[data-xf-click="submit"]') ||
+         form.querySelector('button[type="submit"]') ||
+         form.querySelector('input[type="submit"]'))
+      : (document.querySelector('button[data-xf-click="submit"]') ||
+         document.querySelector('button.button--primary[type="submit"]'));
 
-  if (!submitted) {
-    logger.warn('Send button not found — using Ctrl+Enter keyboard fallback...');
-    await page.focus(editorSelector);
-    await sleep(randomDelay(200, 400));
-    await page.keyboard.down('Control');
-    await page.keyboard.press('Enter');
-    await page.keyboard.up('Control');
-    submitted = true;
-  }
+    if (btn) {
+      btn.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      const opts = { bubbles: true, cancelable: true, view: window };
+      btn.dispatchEvent(new MouseEvent('mouseenter', opts));
+      btn.dispatchEvent(new MouseEvent('mousemove',  opts));
+      btn.dispatchEvent(new MouseEvent('mousedown',  opts));
+      btn.dispatchEvent(new MouseEvent('mouseup',    opts));
+      btn.dispatchEvent(new MouseEvent('click',      opts));
+      return 'btn_events:' + (btn.textContent.trim().slice(0, 30));
+    }
+    if (form) {
+      try { form.requestSubmit(); return 'form_requestSubmit'; }
+      catch (e) { form.submit(); return 'form_submit'; }
+    }
+    return 'nothing_found';
+  }, editorSelector);
+  logger.info(`           Submit: ${submitResult}`);
+
+  await sleep(randomDelay(4000, 7000));
 
   await sleep(randomDelay(3000, 6000));
 
