@@ -241,6 +241,12 @@ export async function sendDM(lead, dmText, opts = {}) {
     return { success: false, reason: 'already_sent' };
   }
 
+  // ── GUARD: no username = can't DM ───────────────────────────────────
+  if (!lead.poster_username || lead.poster_username === 'unknown') {
+    logger.warn(`Lead #${lead.id} has no poster_username — cannot send DM. Skipping.`);
+    return { success: false, reason: 'no_username' };
+  }
+
   if (DRY_RUN) {
     logger.info('DRY RUN — skipping browser actions and DB update.\n');
     return { success: true, conversationUrl: null, conversationId: null, dryRun: true };

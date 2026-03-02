@@ -263,25 +263,49 @@ class BHWScraper {
       
       if (!html) {
         logger.warn(`Failed to retrieve thread page: ${url}`);
-        return 'No description found';
+        return { description: 'No description found', authorUsername: null };
       }
 
       const $ = cheerio.load(html);
       
       // Find the OP's first post
-      const opDescription = $('article.message.message--post').first();
-      
-      if (opDescription.length > 0) {
-        const opBody = opDescription.find('.message-content .bbWrapper');
-        const description = this.cleanText(opBody.text().trim()) || 'No description found';
-        logger.info(`Description fetched: ${description.length} chars`);
-        return description;
+      const opPost = $('article.message.message--post').first();
+
+      // Extract the OP's username from the post itself (reliable — direct DOM, not listing card)
+      let authorUsername = null;
+      if (opPost.length > 0) {
+        const usernameEl = opPost.find('.message-name a.username, .message-userDetails a.username, .message-name .username, a.username').first();
+        if (usernameEl.length > 0) {
+          authorUsername = this.cleanText(usernameEl.text().trim()) || null;
+        }
+        // Fallback: extract from message-userDetails href
+        if (!authorUsername) {
+          const userLink = opPost.find('a[href*="/members/"]').first();
+          if (userLink.length > 0) {
+            const href = userLink.attr('href') || '';
+            const match = href.match(/\/members\/([^\/\.]+)/);
+            if (match) authorUsername = match[1];
+          }
+        }
       }
 
-      return 'No description found';
+      if (authorUsername) {
+        logger.info(`Author extracted from thread page: @${authorUsername}`);
+      } else {
+        logger.warn(`Could not extract author username from thread page: ${url}`);
+      }
+      
+      if (opPost.length > 0) {
+        const opBody = opPost.find('.message-content .bbWrapper');
+        const description = this.cleanText(opBody.text().trim()) || 'No description found';
+        logger.info(`Description fetched: ${description.length} chars`);
+        return { description, authorUsername };
+      }
+
+      return { description: 'No description found', authorUsername };
     } catch (error) {
       logger.error(`Error fetching thread description from ${url}:`, error.message);
-      return 'No description found';
+      return { description: 'No description found', authorUsername: null };
     }
   }
 
@@ -351,9 +375,19 @@ class BHWScraper {
         continue;
       }
 
-      // Extract author
-      const authorTag = card.find('.structItem-minor .username, .structItem-parts .username').first();
-      const author = authorTag.length > 0 ? this.cleanText(authorTag.text().trim()) : null;
+      // Extract author — try multiple selectors (BHW XenForo 2 HTML varies)
+      const authorTag = card.find(
+        '.structItem-minor .username, .structItem-parts .username, ' +
+        '.structItem-cell--user .username, a.username, ' +
+        '.structItem-minor a[href*="/members/"]'
+      ).first();
+      let author = authorTag.length > 0 ? this.cleanText(authorTag.text().trim()) : null;
+      // Fallback: extract username from member href
+      if (!author && authorTag.length > 0) {
+        const href = authorTag.attr('href') || '';
+        const match = href.match(/\/members\/([^\/\.]+)/);
+        if (match) author = match[1];
+      }
 
       // Extract replies and views
       const metaPairs = card.find('.structItem-cell--meta dl.pairs.pairs--justified dd').toArray();
@@ -431,8 +465,17 @@ class BHWScraper {
 
       logger.info('NEW thread - fetching details...');
       
-      // Fetch full description
-      const description = await this.getThreadDescription(basicData.fullUrl, threadId);
+      // Fetch full description (also extracts author username from the post page — more reliable)
+      const { description, authorUsername: fetchedAuthor } = await this.getThreadDescription(basicData.fullUrl, threadId);
+
+      // Use listing-page author if found; fall back to author extracted from thread post page
+      const posterUsername = basicData.author || fetchedAuthor || null;
+      if (!basicData.author && fetchedAuthor) {
+        logger.info(`Using author from thread page as fallback: @${fetchedAuthor}`);
+      }
+      if (!posterUsername) {
+        logger.warn(`Could not determine poster username for thread ${threadId} — DM will be skipped for this lead`);
+      }
       
       // Store in database first (before AI qualification)
       logger.info('Storing thread in database...');
@@ -441,8 +484,8 @@ class BHWScraper {
         threadUrl: basicData.fullUrl,
         title: basicData.title,
         description,
-        posterUsername: basicData.author,
-        posterUrl: basicData.author ? `https://www.blackhatworld.com/members/${basicData.author}/` : null,
+        posterUsername,
+        posterUrl: posterUsername ? `https://www.blackhatworld.com/members/${posterUsername}/` : null,
         postDate: basicData.postedAt,
         threadAgeCategory,
         tags: []
