@@ -267,30 +267,78 @@ Gaps from dev plan audit resolved this session:
 
 | Gap | Problem | Fix |
 |---|---|---|
-| GAP-01 | Comment→DM pause was 3–8 **seconds** (looks robotic) | Changed to `randomDelay(15 min, 30 min)` |
+| GAP-01 | Comment→DM pause was 3–8 **seconds** (looks robotic) | Changed to `randomDelay(2 min, 4 min)` — accepted as final timing |
 | GAP-02 | `shouldSendDM()` existed in helpers but was never called — DMs sent on all threads | Added `shouldSendDM(ageCategory)` gate in `index.js`; DMs only sent on `'fresh'` threads |
 | GAP-03 | No daily cap — bot could comment/DM unlimited times per day | Added `dailyCommentCap` (25) + `dailyDmCap` (25) in config; enforced at start + mid-loop in `index.js`; `getDailyActionCounts()` reads today's counts from DB |
-| GAP-04 | No active hours — bot ran 24/7 | Added `isActiveHours()` in helpers (PKT UTC+5, 9 AM–11 PM); checked at top of every `tick()` |
 | GAP-12 | No `scoreLeadHotness()` function | Added to `aiEngine.js`; wired into `dm.js` |
 | GAP-13 | Follow-up intervals `[7, 14, 21]` (plan says `[7, 12, 21]`) | Fixed in `dm.js` |
 | GAP-14 | `MAX_FOLLOW_UPS` default was `5` (plan says `3`) | Fixed in `config.js` |
 
 ---
 
+### Phase 11: Duplicate Protection & Bug Fixes (March 3, 2026)
+**Status:** ✅ Complete
+
+Three critical bugs found and fixed during first live production run:
+
+#### Bug 1: DMs addressed to @unknown
+- **Root cause:** `extractThreadId()` regex only matched `/threads/slug.ID/` paths, but BHW Hire-a-Freelancer uses `/seo/slug.ID/` paths → returned null → username extraction failed
+- **Fix:** Updated regex to match both: `(?:threads|seo)\/[^/]+\.(\d+)\/?`
+- **Fix 2:** `getThreadDescription()` now extracts author username from the actual thread page (`.message-name a.username`) as fallback
+- **Fix 3:** `sendDM()` guard: if `poster_username` is null or `'unknown'`, skip the DM entirely
+- **Commit:** `2abf3af`
+
+#### Bug 2: Duplicate comments posted on same thread
+- **Root cause:** `extractThreadId()` failure caused scraper to fall back to full URL as `thread_id` → same thread stored twice with different IDs (numeric vs URL) → `UNIQUE` constraint missed it → bot commented twice
+- **Comprehensive fix across 5 files:**
+
+| File | Fix |
+|---|---|
+| `helpers.js` | `extractThreadId()` regex now matches `/seo/` paths |
+| `scraper/index.js` | Never falls back to full URL — skips thread if ID can't be extracted |
+| `comment.js` | Triple guard: memory check + fresh `getLeadById()` DB read before posting |
+| `dm.js` | Fresh `getLeadById()` DB read before sending; skip null/unknown usernames |
+| `comment.js` + `dm.js` | `markLeadCommented()` and `markLeadDMSent()` errors re-thrown (not silently swallowed) |
+| `queries.js` | `getExistingThreadIds()` uses PostgreSQL regexp normalization to match numeric IDs against legacy full-URL thread_ids |
+
+- **DB cleanup:** Deleted 2 duplicate leads, normalized 49 legacy full-URL thread_ids to numeric
+- **Commit:** `4b4ac53`
+
+#### Bug 3: Crash-recovery duplicate prevention
+- **Scenario:** If the bot crashes after posting a comment on BHW but before `markLeadCommented()` updates the DB, the lead still has `commented=false` → on restart, bot re-fetches and double-comments
+- **Fix:** Added live-page duplicate check in `postComment()` — scans the actual BHW thread page for our username's existing comments before posting. If found, auto-heals the DB by marking the lead as commented and aborts
+- **Commit:** `60e96b7`
+
+---
+
 ## Pending Gaps (GAPS.md)
+
+### Resolved / Won't Do
+
+| # | Decision | Reason |
+|---|---|---|
+| GAP-01 | ✅ Accepted as-is | Comment→DM gap (2–4 min) is the desired timing |
+| GAP-02 | ✅ Done | `shouldSendDM()` wired in |
+| GAP-03 | ✅ Done | Daily caps enforced |
+| GAP-04 | ❌ Won't do | Bot runs 24/7 by design — no active-hours restriction |
+| GAP-08 | ❌ Won't do | Inbox replies fire immediately — current technique is accepted |
+| GAP-09 | ❌ Won't do | No night-mode queue — bot operates around the clock |
+| GAP-12 | ✅ Done | `scoreLeadHotness()` implemented |
+| GAP-13 | ✅ Done | Follow-up intervals fixed to [7, 12, 21] |
+| GAP-14 | ✅ Done | MAX_FOLLOW_UPS set to 3 |
+| GAP-15 | ❌ Won't do | Between-leads gap (3–8 min) is the desired pacing |
+| GAP-16 | ❌ Won't do | No consecutive-comment break needed — current flow is accepted |
+| GAP-17 | ✅ Done | `deploy/ecosystem.config.cjs` exists |
+
+### Still Pending
 
 | # | Priority | Description |
 |---|---|---|
+| GAP-06 | 🟡 | No "maybe" queue for borderline leads (`tier: 'maybe'`) — leads with confidence 0.4–0.7 auto-pitched instead of queued for manual review |
+| GAP-07 | 🟡 | No cross-thread 30-day user dedup — same poster on multiple threads can get multiple DMs |
 | GAP-05 | 🟡 | DB column still `niche_match_score INTEGER` — schema migration to rename + change type |
-| GAP-06 | 🟡 | No "maybe" queue for borderline leads (`tier: 'maybe'`) |
-| GAP-07 | 🟡 | No cross-thread 30-day user dedup (same poster on multiple threads) |
-| GAP-08 | 🟡 | No 20–90 min reply delay for inbox-monitor responses |
-| GAP-09 | 🟡 | No night-mode queue (messages drafted but not sent outside active hours) |
 | GAP-10 | 🟡 | `botState` is in-memory only — loses state on restart |
 | GAP-11 | 🟡 | `daily_reports` table exists in schema but nothing writes to it |
-| GAP-15 | 🟠 | No 10–20 min inter-comment gap when processing multiple leads |
-| GAP-16 | 🟠 | No consecutive-comment break rule |
-| GAP-17 | 🟠 | `PM2 ecosystem.config.js` missing |
 
 ---
 
