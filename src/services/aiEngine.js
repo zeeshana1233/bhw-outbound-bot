@@ -386,12 +386,18 @@ Write your reply:`;
 export async function generateFollowUp(title, description, daysSinceLastContact, previousMessages) {
   // Tone shifts per interval
   let toneInstruction;
-  if (daysSinceLastContact <= 7) {
-    toneInstruction = 'Day-7 tone: soft, friendly check-in. "Just following up…" energy. Ask if they have any questions or updated their requirements.';
+  if (daysSinceLastContact <= 2) {
+    toneInstruction = 'Day-2 tone: ultra-brief, just confirming the DM landed. "Making sure this didn\'t get buried" energy. One sentence max. No pitch repeat.';
+  } else if (daysSinceLastContact <= 3) {
+    toneInstruction = 'Day-3 tone: casual and short. Ask one simple question — whether they\'ve decided on someone yet or if they want to hop on a quick call. 1–2 sentences.';
+  } else if (daysSinceLastContact <= 5) {
+    toneInstruction = 'Day-5 tone: add a thin new value angle — reference a relevant skill, a past project type, or a speed/quality advantage. Give them a fresh reason to reply. 2–3 sentences max.';
+  } else if (daysSinceLastContact <= 7) {
+    toneInstruction = 'Day-7 tone: soft, friendly check-in. "Just following up…" energy. Ask if they have any questions or if requirements have changed.';
   } else if (daysSinceLastContact <= 12) {
-    toneInstruction = 'Day-12 tone: add a small new hook — mention a recent project, a demo, or a new angle on their problem. Give them a reason to reply beyond just checking in.';
+    toneInstruction = 'Day-12 tone: add a stronger hook — mention a demo, a similar project delivered, or a concrete result. Give them a compelling reason to reply now.';
   } else {
-    toneInstruction = 'Day-21 tone: closing / final nudge. Keep it warm but let them know this is your last message before you close the lead. "Let me know if the timing changes" energy.';
+    toneInstruction = 'Day-21 tone: closing / final nudge. Warm but final. Let them know this is your last check-in before you move on. "Let me know if the timing changes" energy.';
   }
 
   const functionInstructions = `Write a follow-up message to a cold lead on BHW.

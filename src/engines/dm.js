@@ -138,7 +138,7 @@ async function humanTypeInBrowser(page, text) {
  * and stores it in the DB ready to send.
  */
 async function scheduleFollowUps(lead, conversationId, dmText) {
-  const intervals = [7, 12, 21]; // base days after DM sent (plan §5.2)
+  const intervals = [2, 3, 5, 7, 12, 21]; // day 2, 3, 5, 7, 12, 21 after DM sent
   const previousMessages = `Outbound DM:\n${dmText}`;
 
   for (let i = 0; i < intervals.length; i++) {
@@ -497,7 +497,7 @@ export async function sendDM(lead, dmText, opts = {}) {
   logger.info(`   Recipient     : @${lead.poster_username}`);
   logger.info(`   Conversation  : ${conversationUrl || currentUrl}`);
   logger.info(`   DB conv ID    : ${dbConversationId}`);
-  logger.info(`   Follow-ups    : scheduled at day 7, 14, 21`);
+    logger.info(`   Follow-ups    : scheduled at day 2, 3, 5, 7, 12, 21`);
   logger.info('═══════════════════════════════════════════════════════════\n');
 
   return {

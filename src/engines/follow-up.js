@@ -107,10 +107,10 @@ export async function processFollowUps(opts = {}) {
     const fu = pending[i];
     try {
       if (fu.last_response_from === 'them') {
-        // They replied at some point — inbox-monitor handles the reply;
-        // we just make sure all pending follow-ups for this conv are paused.
-        logger.info(`  ⏸️  Pausing follow-up #${fu.id} — lead replied (unanswered reply in conv #${fu.conversation_id})`);
-        await pauseFollowUpsForConversation(fu.conversation_id, 'unanswered_reply').catch(() => {});
+        // They replied — skip ALL pending follow-ups for this conversation.
+        // No point chasing someone who is already in active dialogue.
+        logger.info(`  ⏸️  Skipping follow-up #${fu.id} for @${fu.lead_poster_username} — they replied, pausing entire sequence (conv #${fu.conversation_id})`);
+        await pauseFollowUpsForConversation(fu.conversation_id, 'reply_received').catch(() => {});
         paused++;
         continue;
       }
