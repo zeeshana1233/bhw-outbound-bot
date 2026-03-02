@@ -40,6 +40,7 @@ import {
   getConversationByLeadId,
   incrementConversationMessages,
   updateConversationBhwUrl,
+  getLeadById,
 } from '../database/queries.js';
 import { config } from '../config/config.js';
 
@@ -245,6 +246,17 @@ export async function sendDM(lead, dmText, opts = {}) {
   if (!lead.poster_username || lead.poster_username === 'unknown') {
     logger.warn(`Lead #${lead.id} has no poster_username — cannot send DM. Skipping.`);
     return { success: false, reason: 'no_username' };
+  }
+
+  // ── GUARD: fresh DB check to prevent duplicate DMs ──────────────────
+  try {
+    const freshLead = await getLeadById(lead.id);
+    if (freshLead && freshLead.dm_sent === true) {
+      logger.warn(`Lead #${lead.id} already dm_sent in DB — aborting to prevent duplicate.`);
+      return { success: false, reason: 'already_sent_db' };
+    }
+  } catch (checkErr) {
+    logger.error(`Failed DB freshness check for lead #${lead.id}:`, checkErr.message);
   }
 
   if (DRY_RUN) {
@@ -516,7 +528,9 @@ export async function sendDM(lead, dmText, opts = {}) {
     await scheduleFollowUps(lead, dbConversationId, dmText);
 
   } catch (dbErr) {
-    logger.error('Failed to update database after sending DM:', dbErr.message);
+    logger.error('CRITICAL — Failed to update database after sending DM:', dbErr.message);
+    logger.error('This lead may get double-DMed on next cycle!');
+    throw new Error(`DM sent but DB update failed for lead #${lead.id}: ${dbErr.message}`);
   }
 
   logger.info('');

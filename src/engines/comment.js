@@ -23,7 +23,7 @@ import logger from '../utils/logger.js';
 import { sleep, randomDelay } from '../utils/helpers.js';
 import aiEngine from '../services/aiEngine.js';
 import bhwSession from '../utils/bhwSession.js';
-import { markLeadCommented } from '../database/queries.js';
+import { markLeadCommented, getLeadById } from '../database/queries.js';
 import { config } from '../config/config.js';
 import { checkAndReplyToInbox } from './inbox-monitor.js';
 
@@ -205,6 +205,23 @@ export async function generateComment(lead) {
  */
 export async function postComment(lead, commentText, opts = {}) {
   const DRY_RUN = opts.dryRun === true;
+
+  // ── GUARD: already commented? (fresh DB check — prevents duplicates) ───
+  if (lead.commented === true) {
+    logger.warn(`Lead #${lead.id} already has commented=true in memory — skipping postComment.`);
+    return { success: false, reason: 'already_commented' };
+  }
+  // Double-check DB in case another cycle already posted while we were generating
+  try {
+    const freshLead = await getLeadById(lead.id);
+    if (freshLead && freshLead.commented === true) {
+      logger.warn(`Lead #${lead.id} already commented in DB — aborting to prevent duplicate.`);
+      return { success: false, reason: 'already_commented_db' };
+    }
+  } catch (checkErr) {
+    logger.error(`Failed DB freshness check for lead #${lead.id}:`, checkErr.message);
+    // Proceed cautiously — the main loop guard should have caught it
+  }
 
   logger.info('═══════════════════════════════════════════════════════════');
   logger.info(DRY_RUN ? '💬 COMMENT ENGINE — DRY RUN MODE' : '💬 COMMENT ENGINE — LIVE MODE');
@@ -501,10 +518,13 @@ export async function postComment(lead, commentText, opts = {}) {
   // ── 11. Update database ────────────────────────────────────────────
   try {
     await markLeadCommented(lead.id, commentId || 'unknown');
+    lead.commented = true; // Update in-memory so callers see it immediately
     logger.info('          Database updated — lead marked as commented.');
   } catch (dbErr) {
-    logger.error('Failed to update database after posting comment:', dbErr);
-    // Don't throw — the comment was posted regardless
+    logger.error('CRITICAL — Failed to update database after posting comment:', dbErr);
+    logger.error('This lead may get double-commented on next cycle!');
+    // Re-throw so the caller knows the DB update failed
+    throw new Error(`Comment posted but DB update failed for lead #${lead.id}: ${dbErr.message}`);
   }
 
   logger.info('');

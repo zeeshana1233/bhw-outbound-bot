@@ -364,7 +364,12 @@ class BHWScraper {
 
       const threadPath = titleTag.attr('href') || '';
       const fullUrl = 'https://www.blackhatworld.com' + threadPath;
-      const threadId = extractThreadId(fullUrl) || fullUrl;
+      const threadId = extractThreadId(fullUrl);
+      if (!threadId) {
+        logger.warn(`  Could not extract thread ID from URL: ${fullUrl} — skipping`);
+        stats.filtered_out++;
+        continue;
+      }
       const title = this.cleanText(titleTag.text().trim());
 
       // Skip pinned/rules posts — they are permanent fixtures, never jobs

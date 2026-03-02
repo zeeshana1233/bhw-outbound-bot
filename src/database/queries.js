@@ -59,9 +59,26 @@ export async function getExistingThreadIds(threadIds) {
     return [];
   }
   
-  const sql = 'SELECT thread_id FROM leads WHERE thread_id = ANY($1)';
+  // Normalize: match numeric IDs against both exact thread_id and
+  // legacy full-URL thread_ids (e.g. 'https://...slug.1796371/')
+  // Uses PostgreSQL regexp to extract trailing numeric ID from stored URLs
+  const sql = `
+    SELECT DISTINCT thread_id,
+      COALESCE(
+        (regexp_match(thread_id, '\\.(\\d+)\\/?$'))[1],
+        thread_id
+      ) AS normalized_id
+    FROM leads
+    WHERE thread_id = ANY($1)
+       OR COALESCE(
+            (regexp_match(thread_id, '\\.(\\d+)\\/?$'))[1],
+            thread_id
+          ) = ANY($1)
+  `;
   const result = await query(sql, [threadIds]);
-  return result.rows.map(row => row.thread_id);
+  // Return the input IDs that were found (using normalized comparison)
+  const normalizedSet = new Set(result.rows.map(r => r.normalized_id));
+  return threadIds.filter(id => normalizedSet.has(id));
 }
 
 export async function markLeadCommented(leadId, commentId) {

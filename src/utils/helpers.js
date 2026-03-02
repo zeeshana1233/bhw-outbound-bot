@@ -48,9 +48,11 @@ export function getThreadAgeCategory(postDate) {
 
 /**
  * Extract thread ID from BHW URL
+ * Handles both /threads/slug.ID/ and /seo/slug.ID/ paths
  */
 export function extractThreadId(url) {
-  const match = url.match(/threads\/[^\/]+\.(\d+)\//);
+  // Match numeric ID at the end of the slug: /seo/slug.12345/ or /threads/slug.12345/
+  const match = url.match(/(?:threads|seo)\/[^\/]+\.(\d+)\/?/);
   return match ? match[1] : null;
 }
 
