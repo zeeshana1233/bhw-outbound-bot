@@ -2,8 +2,28 @@
 
 **Project:** BlackHatWorld Outbound Lead Automation  
 **Started:** February 27, 2026  
-**Last Updated:** February 28, 2026  
-**Status:** 🟢 Core system complete — ready for live testing
+**Last Updated:** March 3, 2026  
+**Status:** 🟢 Running live on production server
+
+---
+
+## Production Server
+
+| Field | Value |
+|---|---|
+| **Type** | Windows Remote Desktop (RDP) |
+| **IP** | `38.242.198.21` |
+| **User** | `Administrator` |
+| **Password** | `hundret333` |
+| **Bot path** | `C:\bhw-bot` |
+| **Service name** | `bhw-bot` (Windows Service via WinSW) |
+| **Start bot** | `sc start bhw-bot` |
+| **Stop bot** | `sc stop bhw-bot` |
+| **Check status** | `sc query bhw-bot` |
+| **Logs** | `C:\bhw-bot\logs\` |
+| **SSH access** | `ssh Administrator@38.242.198.21` |
+
+> Deploy updates: SCP changed files to `C:\bhw-bot\src\services\` then `sc stop bhw-bot && sc start bhw-bot`
 
 ---
 
