@@ -271,6 +271,42 @@ export async function postComment(lead, commentText, opts = {}) {
   ).catch(() => '(unknown)');
   logger.info(`          Page title: "${pageTitle}"`);
 
+  // ── 3.5 Live-page duplicate check ─────────────────────────────────
+  // Last-resort safety net: scan the loaded thread for any comment by
+  // our own BHW username. If found, the comment was posted on a previous
+  // run (but the DB update may have failed / service crashed before marking).
+  const ourUsername = (bhwSession.getUsername() || '').toLowerCase();
+  if (ourUsername) {
+    const alreadyCommented = await page.evaluate((uname) => {
+      // XenForo message blocks: each has a data-author attribute
+      const messages = document.querySelectorAll('.message[data-author]');
+      for (const msg of messages) {
+        const author = (msg.getAttribute('data-author') || '').toLowerCase();
+        if (author === uname) return true;
+      }
+      // Fallback: check username links inside message headers
+      const userLinks = document.querySelectorAll('.message-name a.username');
+      for (const a of userLinks) {
+        if ((a.textContent || '').trim().toLowerCase() === uname) return true;
+      }
+      return false;
+    }, ourUsername);
+
+    if (alreadyCommented) {
+      logger.warn(`⚠️  LIVE-PAGE CHECK: Our user @${ourUsername} already has a comment on this thread!`);
+      logger.warn(`    Aborting comment to prevent duplicate. Marking lead #${lead.id} as commented in DB.`);
+      // Fix the DB state so we don't come back here again
+      try {
+        await markLeadCommented(lead.id, 'recovered_from_page');
+        lead.commented = true;
+      } catch (fixErr) {
+        logger.error(`Failed to mark lead #${lead.id} as commented during recovery:`, fixErr.message);
+      }
+      return { success: false, reason: 'already_commented_on_page' };
+    }
+    logger.info(`          Live-page check passed — no existing comment by @${ourUsername}`);
+  }
+
   // ── 4. Simulate reading the thread ────────────────────────────────
   logger.info('Step 4/10 — Simulating reading the thread...');
   // Scroll through the page in a few steps as if reading
