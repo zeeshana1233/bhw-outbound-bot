@@ -303,10 +303,10 @@ class BHWScraper {
     const $ = cheerio.load(html);
     const allCards = $('div.structItem--thread').toArray();
 
-    // ── Only look at the top 20 cards ───────────────────────────────────────
+    // ── Only look at the top 10 cards ───────────────────────────────────────
     // BHW always lists newest posts first. New leads always arrive at the top.
-    // 20 covers ~1–2 pages worth so we never miss jobs posted a few hours ago.
-    const TOP_N    = 20;
+    // 10 covers enough recent posts without over-scanning on every cycle.
+    const TOP_N    = 10;
     const threadCards = allCards.slice(0, TOP_N);
 
     // Tracks all 5 inspected posts with per-post status for the WA ping
