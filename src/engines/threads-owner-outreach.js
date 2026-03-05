@@ -24,7 +24,7 @@ import aiEngine                         from '../services/aiEngine.js';
 import alerts                           from '../services/alerts.js';
 import { botState }                     from '../utils/botState.js';
 import { config }                       from '../config/config.js';
-import { getLeadByPosterUsername, logActivity } from '../database/queries.js';
+import { getLeadByPosterUsername, logActivity, getOutreachProgress } from '../database/queries.js';
 import {
   getPendingOutreachTargets,
   getOutreachTargetByUsername,
@@ -392,13 +392,33 @@ async function processOutreachTarget(target, dryRun = false) {
   }).catch(() => {});
 
   // ── Step 9: WhatsApp alert ───────────────────────────────────────────────
-  await alerts.sendRawAlert(
-    `${tag} DM sent ✅\n` +
-    `To: @${posterUsername}\n` +
-    `Thread: "${title.slice(0, 80)}"\n` +
-    `Follow-ups: Day ${FOLLOW_UP_DAYS[0]} / Day ${FOLLOW_UP_DAYS[1]} / Day ${FOLLOW_UP_DAYS[2]} scheduled` +
-    (dryRun ? '\n⚠️ DRY RUN — nothing actually sent' : '')
-  ).catch(() => {});
+  const progress = await getOutreachProgress().catch(() => null);
+  const progressLine = progress
+    ? `Progress: ${progress.dm_sent + progress.replied} / ${progress.total} done — ${progress.pending} remaining`
+    : '';
+
+  if (dryRun) {
+    // Full preview in dry run mode — show DM text + all 3 follow-ups
+    await alerts.sendRawAlert(
+      `${tag} 🔍 *DRY RUN preview*\n` +
+      `To: @${posterUsername}\n` +
+      `Thread: "${title.slice(0, 80)}"\n\n` +
+      `*Initial DM:*\n${dmText}\n\n` +
+      `*Follow-up #1 (Day ${FOLLOW_UP_DAYS[0]}):*\n${generated.followUp1}\n\n` +
+      `*Follow-up #2 (Day ${FOLLOW_UP_DAYS[1]}):*\n${generated.followUp2}\n\n` +
+      `*Follow-up #3 (Day ${FOLLOW_UP_DAYS[2]}):*\n${generated.followUp3}\n\n` +
+      `⚠️ No BHW DM sent — dry run mode\n` +
+      progressLine
+    ).catch(() => {});
+  } else {
+    await alerts.sendRawAlert(
+      `${tag} DM sent ✅\n` +
+      `To: @${posterUsername}\n` +
+      `Thread: "${title.slice(0, 80)}"\n` +
+      `Follow-ups: Day ${FOLLOW_UP_DAYS[0]} / Day ${FOLLOW_UP_DAYS[1]} / Day ${FOLLOW_UP_DAYS[2]} scheduled\n` +
+      progressLine
+    ).catch(() => {});
+  }
 
   logger.info(`${tag} ✅ Done — @${posterUsername} | DM sent | 3 follow-ups scheduled`);
   return true;
@@ -470,7 +490,7 @@ function scatterSendTimes(count, windowMs) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function startThreadsOwnerOutreach(opts = {}) {
-  const dryRun = opts.dryRun    !== undefined ? opts.dryRun : (process.env.DRY_RUN !== 'false');
+  const dryRun = opts.dryRun !== undefined ? opts.dryRun : (process.env.DRY_RUN === 'true');
   const tag    = '[THREADS-OWNER-OUTREACH]';
 
   if (!config.outreach.enabled) {
@@ -478,7 +498,19 @@ export async function startThreadsOwnerOutreach(opts = {}) {
     return;
   }
 
-  logger.info(`${tag} Starting… [${dryRun ? 'DRY RUN' : '🔴 LIVE'}]`);
+  logger.info(`${tag} Starting… [${dryRun ? '🔍 DRY RUN — no BHW DMs will be sent' : '🔴 LIVE'}]`);
+
+  // Show progress summary at startup
+  try {
+    const p = await getOutreachProgress();
+    const done = p.dm_sent + p.replied;
+    logger.info(`${tag} Progress: ${done}/${p.total} targets done | ${p.pending} pending | ${p.skipped} skipped`);
+    await alerts.sendRawAlert(
+      `${tag} Started [${dryRun ? 'DRY RUN' : '🔴 LIVE'}]\n` +
+      `Progress: ${done}/${p.total} done | ${p.pending} pending | ${p.skipped} skipped\n` +
+      `Daily cap: ${DAILY_CAP}/day | Window: ${ACTIVE_START_UTC}:00–${ACTIVE_END_UTC}:00 UTC`
+    ).catch(() => {});
+  } catch (e) { logger.warn(`${tag} Could not load progress: ${e.message}`); }
 
   const cycle = async () => {
     // ── Wait for active window ──────────────────────────────────────────────
@@ -493,7 +525,13 @@ export async function startThreadsOwnerOutreach(opts = {}) {
       return;
     }
 
-    // ── Pick 5 targets ──────────────────────────────────────────────────────
+    // ── Pick up to DAILY_CAP targets ────────────────────────────────────────
+    const progress = await getOutreachProgress().catch(() => null);
+    if (progress) {
+      const done = progress.dm_sent + progress.replied;
+      logger.info(`${tag} Progress: ${done}/${progress.total} done | ${progress.pending} pending | ${progress.skipped} skipped`);
+    }
+
     const targets = await getPendingOutreachTargets(DAILY_CAP);
     if (targets.length === 0) {
       logger.info(`${tag} No pending targets — sleeping 6 hours`);
@@ -501,7 +539,7 @@ export async function startThreadsOwnerOutreach(opts = {}) {
       return;
     }
 
-    logger.info(`${tag} ${targets.length} target(s) picked for today's batch`);
+    logger.info(`${tag} ${targets.length}/${DAILY_CAP} target(s) picked for today's batch (${progress?.pending ?? '?'} total remaining)`);
 
     // ── Scatter send-times across the active window ─────────────────────────
     const windowMs   = msUntilWindowClose();

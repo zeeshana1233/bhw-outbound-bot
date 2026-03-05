@@ -1,17 +1,19 @@
 /**
  * test-outreach-dry-run.js
  *
- * [THREADS-OWNER-OUTREACH] — Dry run for first 3 pending targets.
+ * [THREADS-OWNER-OUTREACH] — Dry run: processes today's batch (dailyCap targets).
  *
  * What this does (everything EXCEPT sending the actual BHW DM):
+ *   ✅ Shows progress summary at startup (done / remaining)
+ *   ✅ Respects OUTREACH_DAILY_CAP — only processes N targets per run
  *   ✅ Authenticates BHW session
  *   ✅ Real scrape of each thread (Puppeteer + CloudFlare bypass)
  *   ✅ Duplicate check (cross-module + within-module)
  *   ✅ AI generates personalised DM text
  *   ✅ AI generates all 3 follow-up messages (day 3 / day 7 / day 14)
  *   ✅ WhatsApp notification with EVERYTHING — thread, DM, all follow-ups
+ *   ✅ Marks each previewed target as 'dry_run_sent' in DB (so next run resumes)
  *   ❌ Does NOT send BHW DM
- *   ❌ Does NOT write anything to DB
  *
  * Usage:
  *   node test-outreach-dry-run.js
@@ -31,12 +33,14 @@ import {
   getPendingOutreachTargets,
   getLeadByPosterUsername,
   getOutreachTargetByUsername,
+  markOutreachTargetDryRunSent,
+  getOutreachProgressSummary,
 } from './src/database/queries.js';
 import { config } from './src/config/config.js';
 
 const TAG          = '[THREADS-OWNER-OUTREACH DRY RUN]';
 const BHW_USERNAME = process.env.BHW_USERNAME || 'app_pilot';
-const TARGETS      = 100; // process ALL pending — full daily batch
+const TARGETS      = config.outreach.dailyCap; // today's batch only (default 5)
 const FOLLOW_UP_DAYS = [
   config.outreach.followUp1Days,   // 3
   config.outreach.followUp2Days,   // 7
@@ -82,6 +86,22 @@ async function main() {
   await initDatabase();
   logger.info('✅ DB connected');
 
+  // ── Progress summary ─────────────────────────────────────────────────────
+  const progress = await getOutreachProgressSummary();
+  const done     = (progress.byStatus['dry_run_sent'] || 0) + (progress.byStatus['dm_sent'] || 0);
+  const pending  = progress.byStatus['pending'] || 0;
+  const skipped  = progress.byStatus['skip'] || 0;
+  console.log(`\n📊 Campaign Progress:`);
+  console.log(`   Total targets  : ${progress.total}`);
+  console.log(`   ✅ Done        : ${done}  (dry_run_sent + dm_sent)`);
+  console.log(`   ⏳ Pending     : ${pending}  ← today's batch: ${Math.min(TARGETS, pending)}`);
+  console.log(`   ⏭️  Skipped     : ${skipped}`);
+  if (pending === 0) {
+    console.log(`\n✅ All targets have been processed! Nothing pending.`);
+    process.exit(0);
+  }
+  console.log(``);
+
   await initWhatsApp();
 
   // Wait until WA is fully ready AND group is resolved (up to 3 min for QR scan)
@@ -105,9 +125,11 @@ async function main() {
 
   // ── Kick off with a header alert ────────────────────────────────────────
   await alerts.sendRawAlert(
-    `${TAG}\n🔍 Starting full-day dry run — ALL pending targets\n` +
+    `${TAG}\n🔍 Starting dry run — today's batch: ${Math.min(TARGETS, pending)} target(s)\n` +
+    `Progress: ${done} done, ${pending} remaining of ${progress.total} total.\n` +
     `Will preview: scraped description, generated DM, all 3 follow-ups.\n` +
-    `❌ Nothing will be sent on BHW.`
+    `❌ Nothing will be sent on BHW.\n` +
+    `✅ Each previewed target will be marked 'dry_run_sent' so tomorrow starts fresh.`
   ).catch(() => {});
 
   // ── Fetch targets ────────────────────────────────────────────────────────
@@ -256,6 +278,14 @@ async function main() {
 
     console.log(`  ✅ WhatsApp notification sent`);
 
+    // ── Mark as dry_run_sent in DB so this target is skipped on next run ────
+    try {
+      await markOutreachTargetDryRunSent(target.id);
+      console.log(`  💾 Marked target #${target.id} as dry_run_sent (will skip next run)`);
+    } catch (dbErr) {
+      logger.warn(`Failed to mark target #${target.id}: ${dbErr.message}`);
+    }
+
     // Brief gap between targets (looks natural, avoids session stress)
     if (i < targets.length - 1) {
       const pauseSec = 15 + Math.floor(Math.random() * 15);
@@ -265,18 +295,25 @@ async function main() {
   }
 
   // ── Final summary ────────────────────────────────────────────────────────
+  // Final progress check
+  const progressAfter = await getOutreachProgressSummary();
+  const doneAfter     = (progressAfter.byStatus['dry_run_sent'] || 0) + (progressAfter.byStatus['dm_sent'] || 0);
+  const pendingAfter  = progressAfter.byStatus['pending'] || 0;
+
   console.log(`\n${'═'.repeat(60)}`);
-  console.log(`✅ Dry run complete — ${targets.length} target(s) previewed`);
+  console.log(`✅ Dry run complete — ${targets.length} target(s) previewed today`);
   console.log(`   Nothing was sent to BHW.`);
-  console.log(`   Nothing was written to the database.`);
-  console.log(`   All WhatsApp notifications delivered.`);
+  console.log(`   Each target marked 'dry_run_sent' in DB — won't repeat tomorrow.`);
+  console.log(`\n📊 Updated Campaign Progress:`);
+  console.log(`   ✅ Done    : ${doneAfter} / ${progressAfter.total}`);
+  console.log(`   ⏳ Remaining: ${pendingAfter} targets left for future runs`);
   console.log(`${'═'.repeat(60)}\n`);
 
   await alerts.sendRawAlert(
     `${TAG}\n✅ Dry run complete!\n` +
-    `Previewed ${targets.length} target(s).\n` +
-    `Nothing sent on BHW. Nothing written to DB.\n` +
-    `Review the ${targets.length} preview messages above and reply with feedback.`
+    `Previewed ${targets.length} target(s) today.\n` +
+    `Progress: ${doneAfter}/${progressAfter.total} done — ${pendingAfter} remaining for tomorrow.\n` +
+    `Nothing sent on BHW. Each target marked in DB.`
   ).catch(() => {});
 
   // Give WA a moment to flush the last message before exit

@@ -757,6 +757,38 @@ export async function markOutreachTargetDMSent(targetId) {
 }
 
 /**
+ * Mark a target as previewed in dry-run mode.
+ * Status = 'dry_run_sent' so it won't be picked up again in future dry runs.
+ */
+export async function markOutreachTargetDryRunSent(targetId) {
+  const sql = `
+    UPDATE outreach_targets
+    SET status     = 'dry_run_sent',
+        updated_at = NOW()
+    WHERE id = $1
+  `;
+  await query(sql, [targetId]);
+}
+
+/**
+ * Return a progress summary: counts grouped by status.
+ * Used at dry-run startup to show how far along the campaign is.
+ */
+export async function getOutreachProgressSummary() {
+  const sql = `
+    SELECT status, COUNT(*)::int AS count
+    FROM outreach_targets
+    GROUP BY status
+    ORDER BY status
+  `;
+  const result = await query(sql);
+  const rows   = result.rows;  // [{status, count}, ...]
+  const total  = rows.reduce((s, r) => s + r.count, 0);
+  const byStatus = Object.fromEntries(rows.map(r => [r.status, r.count]));
+  return { total, byStatus };
+}
+
+/**
  * Mark a target as replied, record the time.
  */
 export async function markOutreachTargetReplied(targetId) {
@@ -997,4 +1029,31 @@ export async function getOutreachColdTargets() {
   `;
   const result = await query(sql);
   return result.rows;
+}
+
+/**
+ * Progress summary — counts by status across all outreach_targets.
+ * Returns { pending, dm_sent, replied, cold, skipped, total }
+ */
+export async function getOutreachProgress() {
+  const sql = `
+    SELECT
+      COUNT(*)                                    AS total,
+      COUNT(*) FILTER (WHERE status = 'pending')  AS pending,
+      COUNT(*) FILTER (WHERE status = 'dm_sent')  AS dm_sent,
+      COUNT(*) FILTER (WHERE status = 'replied')  AS replied,
+      COUNT(*) FILTER (WHERE status = 'cold')     AS cold,
+      COUNT(*) FILTER (WHERE status = 'skip')     AS skipped
+    FROM outreach_targets
+  `;
+  const { rows } = await query(sql);
+  const r = rows[0];
+  return {
+    total:   parseInt(r.total),
+    pending: parseInt(r.pending),
+    dm_sent: parseInt(r.dm_sent),
+    replied: parseInt(r.replied),
+    cold:    parseInt(r.cold),
+    skipped: parseInt(r.skipped),
+  };
 }

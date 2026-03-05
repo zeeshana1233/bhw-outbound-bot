@@ -380,8 +380,9 @@ async function main() {
     // Runs its own 16h active window (15:00–07:00 UTC), 5 DMs/day.
     // Controlled by OUTREACH_ENABLED=true in .env
     if (config.outreach.enabled) {
-      startThreadsOwnerOutreach();
-      logger.info('   • Threads Owner Outreach: enabled (5 DMs/day, 15:00–07:00 UTC window)');
+      const dryRun = process.env.DRY_RUN === 'true';
+      startThreadsOwnerOutreach({ dryRun });
+      logger.info(`   • Threads Owner Outreach: enabled (${config.outreach.dailyCap}/day | ${dryRun ? 'DRY RUN — no BHW DMs sent' : '🔴 LIVE'})`);
     } else {
       logger.info('   • Threads Owner Outreach: disabled (set OUTREACH_ENABLED=true to enable)');
     }
