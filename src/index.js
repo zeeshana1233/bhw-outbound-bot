@@ -15,6 +15,7 @@ import bhwSession from './utils/bhwSession.js';
 import { botState } from './utils/botState.js';
 import { startCommandCenter } from './services/commandCenter.js';
 import { initWhatsApp } from './services/whatsappClient.js';
+import { startThreadsOwnerOutreach } from './engines/threads-owner-outreach.js';
 
 dotenv.config();
 
@@ -373,6 +374,17 @@ async function main() {
 
     // Scraper + immediate outreach — one unified loop
     startScraperAndOutreachLoop();
+
+    // ── Threads Owner Outreach Module ─────────────────────────────────────
+    // Independent module: DMs BHW thread owners from a pre-seeded list.
+    // Runs its own 16h active window (15:00–07:00 UTC), 5 DMs/day.
+    // Controlled by OUTREACH_ENABLED=true in .env
+    if (config.outreach.enabled) {
+      startThreadsOwnerOutreach();
+      logger.info('   • Threads Owner Outreach: enabled (5 DMs/day, 15:00–07:00 UTC window)');
+    } else {
+      logger.info('   • Threads Owner Outreach: disabled (set OUTREACH_ENABLED=true to enable)');
+    }
 
     logger.info('\n✅  Bot running — 24h test mode');
     logger.info('   • Scrape BHW every 10–20 min (anonymous, no session)');

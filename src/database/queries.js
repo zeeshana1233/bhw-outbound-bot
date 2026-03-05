@@ -682,3 +682,319 @@ export async function getDailyActionCounts() {
     dmsToday:      parseInt(row.dms_today)      || 0,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THREADS OWNER OUTREACH MODULE — Query Functions
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── outreach_targets ─────────────────────────────────────────────────────────
+
+/**
+ * Pick N pending targets, ordered FIFO by added_at.
+ */
+export async function getPendingOutreachTargets(limit = 5) {
+  const sql = `
+    SELECT * FROM outreach_targets
+    WHERE status = 'pending'
+    ORDER BY added_at ASC
+    LIMIT $1
+  `;
+  const result = await query(sql, [limit]);
+  return result.rows;
+}
+
+/**
+ * Look up a target by its poster_username.
+ */
+export async function getOutreachTargetByUsername(posterUsername) {
+  const sql = `SELECT * FROM outreach_targets WHERE poster_username = $1 LIMIT 1`;
+  const result = await query(sql, [posterUsername]);
+  return result.rows[0] || null;
+}
+
+/**
+ * Update a target's scraped data (description + poster_username) after scraping.
+ */
+export async function updateOutreachTargetScraped(targetId, { description, posterUsername }) {
+  const sql = `
+    UPDATE outreach_targets
+    SET description      = COALESCE($2, description),
+        poster_username  = COALESCE($3, poster_username),
+        updated_at       = NOW()
+    WHERE id = $1
+    RETURNING *
+  `;
+  const result = await query(sql, [targetId, description, posterUsername]);
+  return result.rows[0];
+}
+
+/**
+ * Mark a target as skipped with a reason.
+ */
+export async function skipOutreachTarget(targetId, skipReason) {
+  const sql = `
+    UPDATE outreach_targets
+    SET status      = 'skip',
+        skip_reason = $2,
+        updated_at  = NOW()
+    WHERE id = $1
+  `;
+  await query(sql, [targetId, skipReason]);
+}
+
+/**
+ * Mark a target as DM sent, record the time.
+ */
+export async function markOutreachTargetDMSent(targetId) {
+  const sql = `
+    UPDATE outreach_targets
+    SET status       = 'dm_sent',
+        contacted_at = NOW(),
+        updated_at   = NOW()
+    WHERE id = $1
+  `;
+  await query(sql, [targetId]);
+}
+
+/**
+ * Mark a target as replied, record the time.
+ */
+export async function markOutreachTargetReplied(targetId) {
+  const sql = `
+    UPDATE outreach_targets
+    SET status        = 'replied',
+        last_reply_at = NOW(),
+        updated_at    = NOW()
+    WHERE id = $1
+  `;
+  await query(sql, [targetId]);
+}
+
+/**
+ * Mark a target as cold (no reply after all 3 follow-ups).
+ */
+export async function markOutreachTargetCold(targetId) {
+  const sql = `
+    UPDATE outreach_targets
+    SET status     = 'cold',
+        updated_at = NOW()
+    WHERE id = $1
+  `;
+  await query(sql, [targetId]);
+}
+
+// ── outreach_conversations ────────────────────────────────────────────────────
+
+/**
+ * Create a new outreach conversation row. Returns the new row.
+ */
+export async function createOutreachConversation(targetId) {
+  const sql = `
+    INSERT INTO outreach_conversations (target_id)
+    VALUES ($1)
+    RETURNING *
+  `;
+  const result = await query(sql, [targetId]);
+  return result.rows[0];
+}
+
+/**
+ * Store the BHW conversation URL after the initial DM is sent.
+ */
+export async function updateOutreachConversationUrl(conversationId, url) {
+  const sql = `
+    UPDATE outreach_conversations
+    SET bhw_conversation_url = $2,
+        updated_at           = NOW()
+    WHERE id = $1
+  `;
+  await query(sql, [conversationId, url]);
+}
+
+/**
+ * Update conversation status and last_response_from.
+ */
+export async function updateOutreachConversationStatus(conversationId, status, lastResponseFrom = null) {
+  const sql = `
+    UPDATE outreach_conversations
+    SET status              = $2,
+        last_response_from  = COALESCE($3, last_response_from),
+        last_message_at     = NOW(),
+        updated_at          = NOW()
+    WHERE id = $1
+  `;
+  await query(sql, [conversationId, status, lastResponseFrom]);
+}
+
+/**
+ * Increment message count for either 'us' or 'them'.
+ */
+export async function incrementOutreachConversationMessages(conversationId, direction) {
+  const col = direction === 'outbound' ? 'our_message_count' : 'their_message_count';
+  const sql = `
+    UPDATE outreach_conversations
+    SET message_count      = message_count + 1,
+        ${col}             = ${col} + 1,
+        last_response_from = $2,
+        last_message_at    = NOW(),
+        updated_at         = NOW()
+    WHERE id = $1
+  `;
+  const responseFrom = direction === 'outbound' ? 'us' : 'them';
+  await query(sql, [conversationId, responseFrom]);
+}
+
+/**
+ * Get a conversation by target_id.
+ */
+export async function getOutreachConversationByTargetId(targetId) {
+  const sql = `SELECT * FROM outreach_conversations WHERE target_id = $1 ORDER BY started_at DESC LIMIT 1`;
+  const result = await query(sql, [targetId]);
+  return result.rows[0] || null;
+}
+
+// ── outreach_dms ──────────────────────────────────────────────────────────────
+
+/**
+ * Save a DM message (inbound or outbound) to the outreach_dms table.
+ */
+export async function createOutreachDM({ targetId, conversationId, direction, messageText, messageType }) {
+  const sql = `
+    INSERT INTO outreach_dms (target_id, conversation_id, direction, message_text, message_type)
+    VALUES ($1, $2, $3, $4, $5)
+    RETURNING *
+  `;
+  const result = await query(sql, [targetId, conversationId, direction, messageText, messageType]);
+  return result.rows[0];
+}
+
+/**
+ * Get all DMs for a conversation, ordered chronologically.
+ */
+export async function getOutreachDMsByConversation(conversationId) {
+  const sql = `
+    SELECT * FROM outreach_dms
+    WHERE conversation_id = $1
+    ORDER BY sent_at ASC
+  `;
+  const result = await query(sql, [conversationId]);
+  return result.rows;
+}
+
+// ── outreach_follow_ups ───────────────────────────────────────────────────────
+
+/**
+ * Create all 3 follow-up rows for a target after the initial DM is sent.
+ */
+export async function createOutreachFollowUps(targetId, conversationId, { followUp1, followUp2, followUp3 }, contactedAt, followUpDays) {
+  const base = contactedAt instanceof Date ? contactedAt : new Date(contactedAt);
+  const [days1, days2, days3] = followUpDays;
+
+  const scheduledFor1 = new Date(base.getTime() + days1 * 24 * 60 * 60 * 1000);
+  const scheduledFor2 = new Date(base.getTime() + days2 * 24 * 60 * 60 * 1000);
+  const scheduledFor3 = new Date(base.getTime() + days3 * 24 * 60 * 60 * 1000);
+
+  const sql = `
+    INSERT INTO outreach_follow_ups (target_id, conversation_id, follow_up_number, scheduled_for, message_text)
+    VALUES
+      ($1, $2, 1, $3, $4),
+      ($1, $2, 2, $5, $6),
+      ($1, $2, 3, $7, $8)
+  `;
+  await query(sql, [
+    targetId, conversationId,
+    scheduledFor1, followUp1,
+    scheduledFor2, followUp2,
+    scheduledFor3, followUp3,
+  ]);
+}
+
+/**
+ * Get all pending follow-ups that are due now, with full target + conversation context.
+ */
+export async function getDueOutreachFollowUps() {
+  const sql = `
+    SELECT
+      ofu.*,
+      ot.title,
+      ot.poster_username,
+      ot.thread_url,
+      oc.bhw_conversation_url,
+      oc.last_response_from,
+      oc.status AS conversation_status
+    FROM outreach_follow_ups ofu
+    JOIN outreach_targets       ot ON ot.id = ofu.target_id
+    JOIN outreach_conversations oc ON oc.id = ofu.conversation_id
+    WHERE ofu.status = 'pending'
+      AND ofu.scheduled_for <= NOW()
+    ORDER BY ofu.scheduled_for ASC
+  `;
+  const result = await query(sql);
+  return result.rows;
+}
+
+/**
+ * Mark a follow-up as sent.
+ */
+export async function markOutreachFollowUpSent(followUpId) {
+  const sql = `
+    UPDATE outreach_follow_ups
+    SET status     = 'sent',
+        sent_at    = NOW(),
+        updated_at = NOW()
+    WHERE id = $1
+  `;
+  await query(sql, [followUpId]);
+}
+
+/**
+ * Cancel all pending follow-ups for a target (called when they reply).
+ */
+export async function cancelOutreachFollowUps(targetId) {
+  const sql = `
+    UPDATE outreach_follow_ups
+    SET status     = 'cancelled',
+        updated_at = NOW()
+    WHERE target_id = $1
+      AND status    = 'pending'
+  `;
+  await query(sql, [targetId]);
+}
+
+/**
+ * Mark a follow-up as failed.
+ */
+export async function markOutreachFollowUpFailed(followUpId) {
+  const sql = `
+    UPDATE outreach_follow_ups
+    SET status     = 'failed',
+        updated_at = NOW()
+    WHERE id = $1
+  `;
+  await query(sql, [followUpId]);
+}
+
+/**
+ * Check cold detection: targets with all 3 follow-ups sent, no reply, and
+ * follow-up 3 sent more than 7 days ago. Returns array of target IDs.
+ */
+export async function getOutreachColdTargets() {
+  const sql = `
+    SELECT DISTINCT ot.id AS target_id, ot.poster_username, ot.title
+    FROM outreach_targets ot
+    JOIN outreach_conversations oc ON oc.target_id = ot.id
+    WHERE ot.status = 'dm_sent'
+      AND oc.last_response_from = 'us'
+      AND (
+        SELECT COUNT(*) FROM outreach_follow_ups ofu
+        WHERE ofu.target_id = ot.id AND ofu.status = 'sent'
+      ) = 3
+      AND (
+        SELECT sent_at FROM outreach_follow_ups ofu
+        WHERE ofu.target_id = ot.id AND ofu.follow_up_number = 3
+        LIMIT 1
+      ) < NOW() - INTERVAL '7 days'
+  `;
+  const result = await query(sql);
+  return result.rows;
+}

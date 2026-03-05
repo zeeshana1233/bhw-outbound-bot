@@ -52,4 +52,17 @@ export const config = {
     env: process.env.NODE_ENV || 'development',
     port: parseInt(process.env.PORT) || 3000,
   },
+
+  // ── Threads Owner Outreach Module ───────────────────────────────────────
+  outreach: {
+    enabled:            process.env.OUTREACH_ENABLED === 'true',
+    dailyCap:           parseInt(process.env.OUTREACH_DAILY_CAP)              || 5,
+    activeStartUtc:     parseInt(process.env.OUTREACH_ACTIVE_START_UTC)       || 15, // 10am US Eastern
+    activeEndUtc:       parseInt(process.env.OUTREACH_ACTIVE_END_UTC)         || 7,  // 2am US Eastern
+    windowJitterMin:    parseInt(process.env.OUTREACH_WINDOW_JITTER_MINUTES)  || 30,
+    minGapMinutes:      parseInt(process.env.OUTREACH_MIN_GAP_MINUTES)        || 90,
+    followUp1Days:      parseInt(process.env.OUTREACH_FOLLOWUP1_DAYS)         || 3,
+    followUp2Days:      parseInt(process.env.OUTREACH_FOLLOWUP2_DAYS)         || 7,
+    followUp3Days:      parseInt(process.env.OUTREACH_FOLLOWUP3_DAYS)         || 14,
+  },
 };

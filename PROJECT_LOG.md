@@ -2,7 +2,7 @@
 
 **Project:** BlackHatWorld Outbound Lead Automation  
 **Started:** February 27, 2026  
-**Last Updated:** March 3, 2026  
+**Last Updated:** March 5, 2026  
 **Status:** 🟢 Running live on production server
 
 ---
@@ -46,11 +46,19 @@
 | Command Center | `src/services/commandCenter.js` | ✅ Complete |
 | Alerts (WhatsApp) | `src/services/alerts.js` | ✅ Complete |
 | BHW Session | `src/utils/bhwSession.js` | ✅ Complete |
+| Outreach Persona | `src/services/outreachPersona.js` | ✅ Complete |
+| Threads Owner Outreach | `src/engines/threads-owner-outreach.js` | ✅ Complete |
+| Outreach Follow-up | `src/engines/outreach-follow-up.js` | ✅ Complete |
+| Outreach Inbox | `src/engines/outreach-inbox.js` | ✅ Complete |
 | Bot State | `src/utils/botState.js` | ✅ Complete |
 | Database init | `src/database/init.js` | ✅ Complete |
 | Database queries | `src/database/queries.js` | ✅ Complete |
 | Helpers | `src/utils/helpers.js` | ✅ Complete |
 | Logger | `src/utils/logger.js` | ✅ Complete |
+| **Outreach Persona** | **`src/services/outreachPersona.js`** | **⚠️ Skeleton only — Zeeshan must fill in the persona content** |
+| **Threads Owner Outreach** | **`src/engines/threads-owner-outreach.js`** | **✅ Built — enable with OUTREACH_ENABLED=true after filling persona** |
+| **Outreach Follow-ups** | **`src/engines/outreach-follow-up.js`** | **✅ Built** |
+| **Outreach Inbox** | **`src/engines/outreach-inbox.js`** | **✅ Built** |
 
 ---
 
@@ -311,7 +319,51 @@ Three critical bugs found and fixed during first live production run:
 
 ---
 
-## Pending Gaps (GAPS.md)
+### Phase 12: Threads Owner Outreach Module (March 5, 2026)
+**Status:** ✅ Built — ⚠️ Blocked on persona content (fill in `outreachPersona.js` to enable)
+
+All 5 phases of the `THREADS_OWNER_OUTREACH_PLAN.md` implemented in one session.
+
+#### Files Created
+
+| File | Description |
+|------|-------------|
+| `database/outreach-schema.sql` | 4 isolated tables + indexes + auto-updated triggers |
+| `scripts/seed-outreach-targets.js` | One-time CSV importer — `node scripts/seed-outreach-targets.js targets.csv` |
+| `src/services/outreachPersona.js` | ⚠️ SKELETON — Zeeshan must fill in persona content before enabling |
+| `src/engines/threads-owner-outreach.js` | Main loop: daily scheduler, scrape, DM send, follow-up pre-generation |
+| `src/engines/outreach-follow-up.js` | Follow-up sender — called at end of each batch, not a separate loop |
+| `src/engines/outreach-inbox.js` | Reply checker — called after follow-ups, not a separate loop |
+
+#### Files Modified
+
+| File | Change |
+|------|--------|
+| `src/database/init.js` | Migrations for all 4 outreach tables (CREATE TABLE IF NOT EXISTS) |
+| `src/database/queries.js` | 20+ outreach query functions added at end of file |
+| `src/services/aiEngine.js` | 3 new AI functions: `generateThreadsOwnerOutreachDM`, `generateThreadsOwnerOutreachFollowUps`, `generateThreadsOwnerOutreachReply` |
+| `src/config/config.js` | `config.outreach.*` block — all values from .env with defaults |
+| `src/index.js` | Import + conditional start (`if (config.outreach.enabled)`) |
+| `.env.example` | All 9 new `OUTREACH_*` variables documented |
+
+#### Architecture
+
+- **Session**: Hybrid — shares singleton `bhwSession` (no second browser). Uses `bhwSession.ensureAuthenticated()` + `bhwSession.navigateTo()` exactly like the main pipeline.
+- **DB**: Fully isolated — 4 new tables, no FK into existing tables.
+- **AI**: 3 functions prefixed `generateThreadsOwnerOutreach*` using `outreachPersona` (not `zeePersona`).
+- **Scheduling**: 16-hour active window (15:00–07:00 UTC), ±30-min jitter. 5 DMs/day scattered randomly (min 90 min apart, max 4 hours apart).
+- **Duplicate protection**: Two-layer check — within-module (`outreach_targets`) + cross-module (`leads` table).
+- **Follow-ups**: Pre-generated at DM send time (Day 3/7/14). Sent at end of each daily batch. Auto-cancelled when they reply.
+- **No conflicts with main pipeline**: Inbox check only handles usernames in `outreach_targets`. Main `inbox-monitor.js` handles everything else.
+
+#### How to activate
+
+1. **Write the persona** — open `src/services/outreachPersona.js` and fill in the `OUTREACH_SYSTEM_PROMPT` constant (voice, pitch, tone, CTA Telegram handle).
+2. **Seed targets** — `node scripts/seed-outreach-targets.js /path/to/targets.csv`
+3. **Enable** — set `OUTREACH_ENABLED=true` in `.env`
+4. **Restart bot** — the module starts automatically alongside the main loop.
+
+---
 
 ### Resolved / Won't Do
 
@@ -888,6 +940,52 @@ processFollowUps() fires (random 30-90 min):
 
 inbox-monitor reply received  →  auto-pause all pending for that conversation
 ```
+
+---
+
+## Session Log — March 5, 2026 (Phase 12: Threads Owner Outreach Module)
+
+### Changes Made
+
+**New files added:**
+| File | Description |
+|---|---|
+| `src/engines/threads-owner-outreach.js` | Main daily loop — scrapes targets, sends DMs, triggers inbox+follow-up after each DM |
+| `src/engines/outreach-follow-up.js` | Follow-up runner — `opts.limit` param for per-DM (1) vs. full sweep (no limit) |
+| `src/engines/outreach-inbox.js` | Inbox scanner — reads BHW unread convs, replies to outreach targets, cancels pending follow-ups |
+| `src/services/outreachPersona.js` | Zeeshan persona for outreach module (separate from `zeePersona.js`) |
+| `database/outreach-schema.sql` | 4 isolated tables: `outreach_targets`, `outreach_conversations`, `outreach_dms`, `outreach_follow_ups` |
+| `scripts/seed-outreach-targets.js` | One-time CSV importer — 9 BHW threads seeded |
+| `test-outreach-dry-run.js` | Dry-run test — scrapes + generates DM + follow-ups, sends WA preview, writes nothing to DB |
+| `capture-prompts.js` | Debug tool — re-runs AI calls and captures exact prompts + raw OpenAI response JSON to MD |
+| `OUTREACH_PROMPT_CAPTURE.md` | Output of capture-prompts.js run — exact prompts and responses for all 3 targets |
+| `THREADS_OWNER_OUTREACH_PLAN.md` | Full dev plan for the outreach module |
+| `THREADS_OWNER_OUTREACH_HOW_IT_WORKS.md` | Human-readable how-it-works documentation |
+
+**Key architectural decisions:**
+- **Per-DM flow**: After every DM sent → `checkOutreachInbox()` + `runOutreachFollowUps({limit:1})` → final safety sweep at batch end
+- **Single AI call**: `generateThreadsOwnerOutreachDMAndFollowUps()` replaces two separate calls — returns `{ dmText, followUp1, followUp2, followUp3 }` in one OpenAI request (saves ~50% tokens per target)
+- **Poster name in prompt**: `posterUsername` injected into system prompt context so AI can reference them by handle
+- **No Bitbash in persona**: `outreachPersona.js` positions Zeeshan as independent developer, $150k+ Upwork, Top Rated Plus
+- **DB isolation**: All 4 outreach tables are fully isolated — no FK into existing pipeline tables
+
+**Bug fixes / env changes:**
+- OpenAI API key replaced (old key returned 401)
+- `BHW_CHROME_PROFILE_PATH` set to bundled Chromium for Testing (avoids single-instance Chrome conflict with WA)
+
+**Test results (dry run — 3 targets):**
+- WA connected without QR scan (cached session)
+- BHW authenticated as `app_pilot` (cookies valid)
+- All 3 threads scraped live (CF bypassed each time)
+- DM + 3 follow-ups generated per target via single OpenAI call
+- 3 WA preview messages delivered to "Bitbash BHW Bot" group
+- Zero rows written to DB, zero BHW DMs sent
+
+**DB state:**
+- `outreach_targets`: 9 rows, all `status='pending'`
+- `outreach_conversations`, `outreach_dms`, `outreach_follow_ups`: empty (no live run yet)
+
+**Next step:** Enable live mode — set `OUTREACH_ENABLED=true` in `.env` and restart bot
 
 ---
 
