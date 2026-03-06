@@ -1,50 +1,46 @@
 /**
- * Command Center — WhatsApp Group two-way bot control
+ * Command Center — Telegram Group two-way bot control
  *
- * Replaces the Telegram command center. Zeeshan creates a WhatsApp group,
- * the bot joins via whatsapp-web.js unofficial login (QR scan once), then
- * listens for commands in that group and replies there.
- *
+ * Zeeshan uses a Telegram group with the bot added as admin.
+ * The bot listens for slash commands in the group and replies there.
  * All alerts (handoff, hot lead, daily report …) also go to the same group
  * via alerts.js — one place for everything.
  *
  * ── SETUP (one-time, ~2 minutes) ──────────────────────────────────────────
- *  1. Start the bot: node src/index.js
- *  2. A QR code appears in the terminal — scan it with your phone:
- *     WhatsApp → Settings → Linked Devices → Link a Device
- *  3. Session auto-saved to .wwebjs_auth/ (never push that folder)
- *  4. Create a WhatsApp group, add the linked number, put the exact group name
- *     in .env: WA_GROUP_NAME=Bitbash BHW Bot
- *  5. All future starts auto-login — no QR needed again
+ *  1. Create a bot via @BotFather on Telegram → copy the token
+ *  2. Create a Telegram group, add the bot, give it admin rights
+ *  3. Get the group chat ID (use @userinfobot or Telegram API)
+ *  4. Set in .env:
+ *       TELEGRAM_BOT_TOKEN=<token>
+ *       TELEGRAM_GROUP_ID=<chat-id>  (negative number, e.g. -5054203181)
+ *  5. Start the bot — no QR, no auth, just works
  *
- * ── AVAILABLE COMMANDS ────────────────────────────────────────────────────
- *  status          — full system snapshot (session, paused, uptime, today's stats)
- *  stats           — today's numbers (same as daily report)
- *  leads           — lead funnel overview (qualified → DM'd → replied → converted)
- *  handoffs        — list conversations waiting for your attention
- *  convos          — active conversation count
- *  followups       — pending follow-up count + next due
- *  session         — BHW cookie health check
- *  pause           — freeze all bot actions (scraper, DMs, replies, follow-ups)
- *  resume          — unfreeze
- *  dryrun on       — enable dry-run (safe mode, no real sends)
- *  dryrun off      — go live (real DMs + comments sent)
- *  convert <user>  — mark a lead as converted
- *  skip <user>     — disqualify / blacklist a lead
- *  pause followup <user> — stop chasing a specific lead
- *  force report    — send the daily report right now
- *  help            — show this list
- *
- * Natural language also works — AI parses intent from plain sentences.
- * e.g. "how's the bot doing?", "show me today's numbers", "skip that guy mike22"
+ * ── AVAILABLE SLASH COMMANDS ─────────────────────────────────────────────
+ *  /status          — full system snapshot (session, paused, uptime, today's stats)
+ *  /stats           — today's numbers (same as daily report)
+ *  /leads           — lead funnel overview (qualified → DM'd → replied → converted)
+ *  /handoffs        — list conversations waiting for your attention
+ *  /convos          — active conversation count
+ *  /followups       — pending follow-up count + next due
+ *  /session         — BHW cookie health check
+ *  /pause           — freeze all bot actions (scraper, DMs, replies, follow-ups)
+ *  /resume          — unfreeze
+ *  /dryrun on       — enable dry-run (safe mode, no real sends)
+ *  /dryrun off      — go live (real DMs + comments sent)
+ *  /convert <user>  — mark a lead as converted
+ *  /skip <user>     — disqualify / blacklist a lead
+ *  /pausefollowup <user> — stop chasing a specific lead
+ *  /forcereport     — send the daily report right now
+ *  /community       — community comment stats
+ *  /help            — show this list
  */
 
-import logger     from '../utils/logger.js';
+import logger from '../utils/logger.js';
 import { botState } from '../utils/botState.js';
-import alerts     from './alerts.js';
-import aiEngine   from './aiEngine.js';
+import alerts from './alerts.js';
 import bhwSession from '../utils/bhwSession.js';
-import { sendToGroup, onMessage, isReady } from './whatsappClient.js';
+import { getBot, isReady } from './telegramClient.js';
+import { sendToGroup } from './telegramClient.js';
 import {
   getDailyStats,
   getHandedOffConversations,
@@ -58,81 +54,15 @@ import {
 import { query } from '../database/init.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// REPLY HELPER — sends to the WA command group
+// REPLY HELPER — sends to the Telegram control group
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Send a reply to the command group */
+/** Send a reply to the control group (plain sendToGroup call) */
 async function reply(text) {
   try {
     await sendToGroup(text);
   } catch (err) {
     logger.error('[CommandCenter] reply failed:', err.message);
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// INTENT PARSER — keyword fast-path then OpenClaw AI fallback
-// ─────────────────────────────────────────────────────────────────────────────
-
-const KEYWORD_PATTERNS = [
-  // Exact / simple keywords first (cheapest — no AI call)
-  { intent: 'status',        re: /^(status|ping|health|how.?s?\s+the\s+bot)/i },
-  { intent: 'stats',         re: /^(stats?|report|numbers?|today|daily|show\s+me)/i },
-  { intent: 'pause',         re: /^pause$/i },
-  { intent: 'resume',        re: /^(resume|unpause|start|go)$/i },
-  { intent: 'leads',         re: /^leads?(\s|$)/i },
-  { intent: 'handoffs',      re: /^hand.?offs?/i },
-  { intent: 'convos',        re: /^conv(os?|ersations?)/i },
-  { intent: 'followups',     re: /^follow.?ups?/i },
-  { intent: 'session',       re: /^session/i },
-  { intent: 'force_report',  re: /^force.?report/i },
-  { intent: 'community',     re: /^community|organic.?comment/i },
-  { intent: 'help',          re: /^(help|commands?|\?+)$/i },
-  { intent: 'dryrun_on',     re: /^dry.?run\s+(on|enable|true)/i },
-  { intent: 'dryrun_off',    re: /^dry.?run\s+(off|disable|false|live)/i },
-  // Parameterised commands — capture username
-  { intent: 'convert',       re: /^convert\s+@?(\S+)/i,         param: 1 },
-  { intent: 'skip',          re: /^(skip|disqualify|block)\s+@?(\S+)/i, param: 2 },
-  { intent: 'pause_followup',re: /^pause\s+follow.?up\s+@?(\S+)/i, param: 1 },
-];
-
-async function parseIntent(text) {
-  const t = text.trim();
-
-  // Fast-path keyword matching (free, instant)
-  for (const { intent, re, param } of KEYWORD_PATTERNS) {
-    const m = t.match(re);
-    if (m) {
-      const params = param && m[param] ? { username: m[param].toLowerCase() } : {};
-      return { intent, params };
-    }
-  }
-
-  // AI fallback — parse natural language (costs a small fraction of a cent)
-  const systemPrompt = `You parse commands for a BHW sales bot controller.
-Return ONLY valid JSON with { "intent": string, "params": {} }.
-
-Intents: status, stats, pause, resume, leads, handoffs, convos, followups,
-session, force_report, dryrun_on, dryrun_off, help, unknown.
-Parameterised: convert, skip, pause_followup — all need { "username": "the_name" }.
-
-Map casual language:
-"how is the bot" → status
-"show me numbers" → stats
-"stop everything" → pause
-"who needs attention" → handoffs
-"mark john23 as closed deal" → convert, username="john23"
-"stop following up with mike" → pause_followup, username="mike"
-"ignore that user sarah99" → skip, username="sarah99"
-
-No code fences. No explanation. Only the JSON object.`;
-
-  try {
-    const raw = await aiEngine.callAI(systemPrompt, t, { temperature: 0.1, max_tokens: 80 });
-    const cleaned = raw.replace(/^```[\w]*\n?/m, '').replace(/```$/m, '').trim();
-    return JSON.parse(cleaned);
-  } catch {
-    return { intent: 'unknown', params: {} };
   }
 }
 
@@ -149,9 +79,9 @@ async function handleStatus() {
     `🤖 *Bitbash BHW Bot — Status*`,
     ``,
     `🔌 Session:  ${sessionOk ? '✅ Active' : '❌ DOWN'}`,
-    `⏸️  Paused:   ${state.paused ? `Yes — ${state.pausedReason}` : 'No (running)'}`,
+    `⏸  Paused:   ${state.paused ? `Yes — ${state.pausedReason}` : 'No (running)'}`,
     `🧪 Mode:     ${state.dryRun ? 'DRY RUN (safe)' : '🔴 LIVE'}`,
-    `⏱️  Uptime:   ${state.uptime}`,
+    `⏱  Uptime:   ${state.uptime}`,
     ``,
     `📊 *Today*`,
     stats
@@ -241,16 +171,16 @@ async function handleFollowUps() {
 async function handleSession() {
   const down = bhwSession.isSessionDown();
   await reply(down
-    ? '❌ *BHW Session is DOWN*\nCookies have expired. Bot is paused on BHW actions.\nCheck WhatsApp — an alert was sent when this happened.'
+    ? '❌ *BHW Session is DOWN*\nCookies have expired. Bot is paused on BHW actions.\nCheck Telegram — an alert was sent when this happened.'
     : '✅ *BHW Session is healthy.*\nCookies are valid and authenticated.');
 }
 
 async function handlePause() {
   if (botState.isPaused()) {
-    return reply('⏸️ Already paused. Send `resume` to restart.');
+    return reply('⏸ Already paused. Send /resume to restart.');
   }
-  botState.pause('manual via WhatsApp');
-  await reply('⏸️ *Bot paused.*\nScraper, DMs, inbox replies and follow-ups are all frozen.\nSend `resume` to restart.');
+  botState.pause('manual via Telegram');
+  await reply('⏸ *Bot paused.*\nScraper, DMs, inbox replies and follow-ups are all frozen.\nSend /resume to restart.');
 }
 
 async function handleResume() {
@@ -269,33 +199,33 @@ async function handleDryRun(on) {
   await reply(msg);
 }
 
-async function handleConvert({ username }) {
-  if (!username) return reply('Usage: `convert <username>`\nExample: `convert john23`');
+async function handleConvert(username) {
+  if (!username) return reply('Usage: /convert <username>\nExample: /convert john23');
   const lead = await convertLead(username);
   if (!lead) return reply(`❌ @${username} not found in leads database.`);
   await reply(`🏆 *Converted!*\n@${username} marked as converted. Great work!`);
 }
 
-async function handleSkip({ username }) {
-  if (!username) return reply('Usage: `skip <username>`\nExample: `skip spammer99`');
+async function handleSkip(username) {
+  if (!username) return reply('Usage: /skip <username>\nExample: /skip spammer99');
   const lead = await disqualifyLead(username);
   if (!lead) return reply(`❌ @${username} not found in leads database.`);
   await reply(`🚫 @${username} disqualified and skipped. Bot will no longer contact them.`);
 }
 
-async function handlePauseFollowUp({ username }) {
-  if (!username) return reply('Usage: `pause followup <username>`\nExample: `pause followup mike44`');
+async function handlePauseFollowUp(username) {
+  if (!username) return reply('Usage: /pausefollowup <username>\nExample: /pausefollowup mike44');
   const result = await pauseFollowUpsForUsername(username);
   if (!result) return reply(`❌ @${username} not found, or no active conversation / follow-ups.`);
   const count = Array.isArray(result) ? result.length : 1;
-  await reply(`⏸️ Paused ${count} follow-up(s) for @${username}.`);
+  await reply(`⏸ Paused ${count} follow-up(s) for @${username}.`);
 }
 
 async function handleForceReport() {
-  await reply('📊 Generating report and sending to WhatsApp…');
+  await reply('📊 Generating report and sending to Telegram…');
   const stats = await getDailyStats();
   await alerts.sendDailyReport(stats);
-  await reply('✅ Daily report sent to WhatsApp.');
+  await reply('✅ Daily report sent to Telegram.');
 }
 
 async function handleCommunity() {
@@ -318,7 +248,7 @@ async function handleCommunity() {
       `This week:     ${row.this_week}`,
       `Live (non-dry): ${row.live_posts}`,
       ``,
-      `_Next scan fires automatically every 4–6h. Max 3 comments per run._`,
+      `Next scan fires automatically every 4–6h. Max 3 comments per run.`,
     ];
     await reply(lines.join('\n'));
   } catch (err) {
@@ -331,115 +261,127 @@ async function handleHelp() {
     `🤖 *Bitbash BHW Bot — Commands*`,
     ``,
     `*Status & Data*`,
-    `  \`status\`               — full snapshot`,
-    `  \`stats\`                — today's numbers`,
-    `  \`leads\`                — lead funnel`,
-    `  \`handoffs\`             — convos needing you`,
-    `  \`convos\`               — conversation counts`,
-    `  \`followups\`            — pending follow-ups`,
-    `  \`session\`              — BHW cookie health`,
+    `  /status            — full snapshot`,
+    `  /stats             — today's numbers`,
+    `  /leads             — lead funnel`,
+    `  /handoffs          — convos needing you`,
+    `  /convos            — conversation counts`,
+    `  /followups         — pending follow-ups`,
+    `  /session           — BHW cookie health`,
     ``,
     `*Bot Control*`,
-    `  \`pause\`                — freeze all actions`,
-    `  \`resume\`               — unfreeze`,
-    `  \`dryrun on/off\`        — toggle safe/live mode`,
-    `  \`force report\`         — send WhatsApp report now`,    `  \`community\`            \u2014 community comment stats`,    ``,
-    `*Lead Actions*`,
-    `  \`convert <user>\`       — mark as won`,
-    `  \`skip <user>\`          — disqualify lead`,
-    `  \`pause followup <user>\`— stop chasing a lead`,
+    `  /pause             — freeze all actions`,
+    `  /resume            — unfreeze`,
+    `  /dryrun on         — toggle safe mode`,
+    `  /dryrun off        — go live`,
+    `  /forcereport       — send Telegram report now`,
+    `  /community         — community comment stats`,
     ``,
-    `Natural language also works 👍`,
-    `e.g. _"how's the bot?"_, _"show me today's numbers"_`,
+    `*Lead Actions*`,
+    `  /convert <user>    — mark as won`,
+    `  /skip <user>       — disqualify lead`,
+    `  /pausefollowup <user> — stop chasing a lead`,
   ];
   await reply(help.join('\n'));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DISPATCH
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function dispatch(text) {
-  const { intent, params } = await parseIntent(text);
-  logger.info(`[CommandCenter] Intent: ${intent} | params: ${JSON.stringify(params)}`);
-
-  switch (intent) {
-    case 'status':         return handleStatus();
-    case 'stats':          return handleStats();
-    case 'leads':          return handleLeads();
-    case 'handoffs':       return handleHandoffs();
-    case 'convos':         return handleConvos();
-    case 'followups':      return handleFollowUps();
-    case 'session':        return handleSession();
-    case 'pause':          return handlePause();
-    case 'resume':         return handleResume();
-    case 'dryrun_on':      return handleDryRun(true);
-    case 'dryrun_off':     return handleDryRun(false);
-    case 'convert':        return handleConvert(params);
-    case 'skip':           return handleSkip(params);
-    case 'pause_followup': return handlePauseFollowUp(params);
-    case 'force_report':   return handleForceReport();
-    case 'community':      return handleCommunity();
-    case 'help':           return handleHelp();
-    default:
-      return reply(
-        `🤔 I didn't understand that.\nSend \`help\` for the full command list.`
-      );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WHATSAPP GROUP LISTENER
+// TELEGRAM GROUP LISTENER — slash command registration
 // ─────────────────────────────────────────────────────────────────────────────
 
 let _running = false;
 
 /**
- * Start the WhatsApp command center.
- * Registers a message listener on the shared whatsappClient singleton.
- * Only processes messages from the configured WA group (WA_GROUP_NAME).
+ * Start the Telegram command center.
+ * Registers slash command handlers on the shared Telegraf bot singleton.
+ * Only processes messages from the configured Telegram group (TELEGRAM_GROUP_ID).
  * Dispatches commands and replies to the same group.
  *
- * Call this AFTER initWhatsApp() in index.js — the client must already be
- * initialized before registering listeners (though queueing still works).
+ * Call this AFTER initTelegram() in index.js — the bot must already be
+ * initialized before registering handlers.
  */
 export async function startCommandCenter() {
   if (_running) return; // idempotent
 
-  const groupName = process.env.WA_GROUP_NAME || 'Bitbash BHW Bot';
-
-  logger.info(`[CommandCenter] ✅ Started — listening for WhatsApp commands in group "${groupName}"`);
+  const groupId = process.env.TELEGRAM_GROUP_ID || null;
+  logger.info(`[CommandCenter] Starting — Telegram group ID: ${groupId || '(not set)'}`);
   _running = true;
 
-  // Register inbound message handler on the shared client
-  onMessage(async (msg) => {
-    // Only process group messages (ignore private DMs to the linked number)
-    if (!msg.from.endsWith('@g.us')) return;
+  const bot = getBot();
+  if (!bot) {
+    logger.error('[CommandCenter] Telegraf bot not initialized — command center cannot start.');
+    return;
+  }
 
-    const { getGroupId } = await import('./whatsappClient.js');
-    const groupId = getGroupId();
+  // ── Group-only guard ──────────────────────────────────────────────────────
+  // All commands must come from the configured group
+  const isFromGroup = (ctx) => {
+    if (!groupId) return true; // if no group set, accept all (dev mode)
+    return String(ctx.chat?.id) === String(groupId);
+  };
 
-    // Only accept messages from our configured command group
-    if (groupId && msg.from !== groupId) return;
+  const wrap = (handler) => async (ctx) => {
+    if (!isFromGroup(ctx)) return;
+    try {
+      await handler(ctx);
+    } catch (err) {
+      logger.error('[CommandCenter] Command handler error:', err.message);
+      await reply(`⚠️ Error: ${err.message}`).catch(() => {});
+    }
+  };
 
-    // Ignore messages sent by the bot itself
-    if (msg.fromMe) return;
+  // ── Slash command bindings ────────────────────────────────────────────────
+  bot.command('status',      wrap(() => handleStatus()));
+  bot.command('stats',       wrap(() => handleStats()));
+  bot.command('leads',       wrap(() => handleLeads()));
+  bot.command('handoffs',    wrap(() => handleHandoffs()));
+  bot.command('convos',      wrap(() => handleConvos()));
+  bot.command('followups',   wrap(() => handleFollowUps()));
+  bot.command('session',     wrap(() => handleSession()));
+  bot.command('pause',       wrap(() => handlePause()));
+  bot.command('resume',      wrap(() => handleResume()));
+  bot.command('forcereport', wrap(() => handleForceReport()));
+  bot.command('community',   wrap(() => handleCommunity()));
+  bot.command('help',        wrap(() => handleHelp()));
+  bot.command('start',       wrap(() => handleHelp())); // /start for when bot first added
 
-    const text = (msg.body || '').trim();
-    if (!text) return;
+  // ── Parameterised commands ────────────────────────────────────────────────
+  bot.command('dryrun', wrap((ctx) => {
+    const arg = (ctx.message?.text || '').split(' ')[1]?.toLowerCase();
+    if (arg === 'on' || arg === 'true' || arg === 'enable') return handleDryRun(true);
+    if (arg === 'off' || arg === 'false' || arg === 'disable' || arg === 'live') return handleDryRun(false);
+    return reply('Usage: /dryrun on  or  /dryrun off');
+  }));
 
-    logger.info(`[CommandCenter] Received: "${text.substring(0, 80)}"`);
+  bot.command('convert', wrap((ctx) => {
+    const username = (ctx.message?.text || '').split(' ')[1]?.replace(/^@/, '').toLowerCase();
+    return handleConvert(username);
+  }));
 
-    // Fire and forget — don't let one slow command stall the listener
-    dispatch(text).catch(err =>
-      reply(`⚠️ Error handling command: ${err.message}`).catch(() => {})
-    );
-  });
+  bot.command('skip', wrap((ctx) => {
+    const username = (ctx.message?.text || '').split(' ')[1]?.replace(/^@/, '').toLowerCase();
+    return handleSkip(username);
+  }));
 
-  // Startup ping — wait briefly for the WA client to be ready if needed
+  bot.command('pausefollowup', wrap((ctx) => {
+    const username = (ctx.message?.text || '').split(' ')[1]?.replace(/^@/, '').toLowerCase();
+    return handlePauseFollowUp(username);
+  }));
+
+  // ── Unknown text messages in the group ───────────────────────────────────
+  // Only respond if it looks like an intentional command attempt (starts with /)
+  bot.on('text', wrap((ctx) => {
+    const text = (ctx.message?.text || '').trim();
+    if (!text.startsWith('/')) return; // ignore normal chat
+    return reply(`🤔 Unknown command.\nSend /help for the full command list.`);
+  }));
+
+  logger.info('[CommandCenter] ✅ Telegram slash commands registered.');
+
+  // Startup ping (retry until bot is ready)
   const pingWhenReady = async (retries = 10) => {
     if (isReady()) {
-      await reply('🟢 *Bot started.*\nSend `status` for a full snapshot, or `help` for commands.').catch(() => {});
+      await reply('🟢 *Bot started.*\nSend /status for a full snapshot, or /help for commands.').catch(() => {});
       return;
     }
     if (retries > 0) setTimeout(() => pingWhenReady(retries - 1), 3000);

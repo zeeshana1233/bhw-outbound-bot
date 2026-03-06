@@ -14,7 +14,7 @@ import alerts from './services/alerts.js';
 import bhwSession from './utils/bhwSession.js';
 import { botState } from './utils/botState.js';
 import { startCommandCenter } from './services/commandCenter.js';
-import { initWhatsApp } from './services/whatsappClient.js';
+import { initTelegram } from './services/telegramClient.js';
 import { startThreadsOwnerOutreach } from './engines/threads-owner-outreach.js';
 
 dotenv.config();
@@ -347,7 +347,7 @@ function startHeartbeat() {
   };
 
   setTimeout(ping, INTERVAL_MS); // first ping after 6h
-  logger.info('💓  Heartbeat started — WA ping every 6 hours');
+    logger.info('💓  Heartbeat started — Telegram ping every 6 hours');
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -367,7 +367,7 @@ async function main() {
     // startFollowUpSystem({ dryRun: DRY_RUN });
     // startCommunityCommenter({ dryRun: DRY_RUN });
     // bhwSession.startHealthCheck();
-    await initWhatsApp();
+    await initTelegram();
     startCommandCenter();
     scheduleDailyReport();    // 9 AM WA daily summary
     startHeartbeat();         // 6-hour alive ping
@@ -392,7 +392,7 @@ async function main() {
     logger.info('   • Comment posted immediately on new approved posts');
     logger.info('   • DM sent ~2-4 min after comment (human gap)');
     logger.info('   • No duplicate comment/DM — triple-guarded at DB + loop + engine level');
-    logger.info('   • WhatsApp: new job alert + outreach report + 9 AM daily summary + 6h heartbeat\n');
+    logger.info('   • Telegram: new job alert + outreach report + 9 AM daily summary + 6h heartbeat\n');
 
   } catch (error) {
     logger.error('❌  Fatal error starting bot:', error);

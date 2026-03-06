@@ -1,22 +1,22 @@
 /**
  * Alerts Service
  *
- * Sends alerts to the WhatsApp command group when the bot detects anything
+ * Sends alerts to the Telegram control group when the bot detects anything
  * that needs Zeeshan's attention (handoffs, hot leads, session expiry, etc.).
  *
- * Uses whatsapp-web.js via the shared whatsappClient singleton — same session
- * that the command center uses for inbound commands.
+ * Uses Telegraf via the shared telegramClient singleton — same bot instance
+ * that the command center uses for inbound slash commands.
  *
- * NO extra setup required beyond what whatsappClient.js already needs:
- *   1. QR scan once on first run
- *   2. Set WA_GROUP_NAME in .env to the exact name of your control group
+ * NO extra setup required beyond what telegramClient.js already needs:
+ *   1. Set TELEGRAM_BOT_TOKEN in .env (token from @BotFather)
+ *   2. Set TELEGRAM_GROUP_ID in .env (numeric group chat ID)
  *
  * All exported functions keep their original signatures so nothing else
  * in the codebase needs changing.
  */
 
 import logger from '../utils/logger.js';
-import { sendToGroup } from './whatsappClient.js';
+import { sendToGroup } from './telegramClient.js';
 
 // ─────────────────────────────────────────────────
 // INTERNAL — thin wrapper so every caller goes via sendToGroup
@@ -26,11 +26,11 @@ async function sendAlert(text) {
   try {
     const result = await sendToGroup(text);
     if (result?.skipped) {
-      logger.info('[Alerts] WhatsApp not ready — skipped:', text.substring(0, 80));
+      logger.info('[Alerts] Telegram not ready — skipped:', text.substring(0, 80));
     } else if (result?.sent === false) {
       logger.warn('[Alerts] sendToGroup failed:', result.error || 'unknown error');
     } else {
-      logger.info('[Alerts] Alert sent to WhatsApp group.');
+      logger.info('[Alerts] Alert sent to Telegram group.');
     }
     return result;
   } catch (err) {
@@ -44,7 +44,7 @@ async function sendAlert(text) {
 // ─────────────────────────────────────────────────
 
 /**
- * Send any plain-text WhatsApp message.
+ * Send any plain-text Telegram message.
  * Used for one-off alerts (e.g. session restored).
  */
 export async function sendRawAlert(text) {
@@ -229,7 +229,7 @@ export async function sendCallReminder(username, convUrl, urgentLine, context = 
 // ─────────────────────────────────────────────────
 
 /**
- * Send a daily summary report via WhatsApp.
+ * Send a daily summary report via Telegram.
  * @param {Object} stats - { leadsScraped, dmsSent, replied, handoffs, conversions }
  */
 export async function sendDailyReport(stats = {}) {

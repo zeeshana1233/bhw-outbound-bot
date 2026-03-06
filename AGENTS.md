@@ -30,8 +30,8 @@ Pipeline B — Outreach (Proactive)
 AI Engine  →  provides all text generation for both pipelines
 Personas   →  inject the correct character voice per pipeline
 bhwSession →  single authenticated Puppeteer browser shared by all engines
-alerts     →  WhatsApp notifications for all events
-commandCenter → WhatsApp group two-way control panel
+alerts     →  Telegram notifications for all events
+commandCenter → Telegram group two-way control panel
 botState   →  global pause/dryRun flags
 database   →  PostgreSQL via pg Pool; queries.js is the only DB interface
 ```
@@ -45,9 +45,9 @@ database   →  PostgreSQL via pg Pool; queries.js is the only DB interface
 
 **What it does:**
 - Calls `initDatabase()` to run migrations on startup
-- Initialises WhatsApp session (`initWhatsApp`)
-- Starts `startCommandCenter()` (WA group control)
-- Schedules `scheduleDailyReport()` (9 AM WA summary)
+- Initialises Telegram bot (`initTelegram`)
+- Starts `startCommandCenter()` (Telegram group control)
+- Schedules `scheduleDailyReport()` (9 AM Telegram summary)
 - Starts `startHeartbeat()` (6-hour alive ping)
 - Runs `startScraperAndOutreachLoop()` — unified scrape + outreach tick every 10–20 min
 - Conditionally starts `startThreadsOwnerOutreach()` if `OUTREACH_ENABLED=true`
@@ -178,7 +178,7 @@ database   →  PostgreSQL via pg Pool; queries.js is the only DB interface
 9. Updates DB: `createDM`, `incrementConversationMessages`, `updateLeadStatus`
 
 **Inputs:** BHW conversation URL, lead DB row, conversation DB row, `bhwSession`, `aiEngine`
-**Outputs:** Reply posted on BHW; DB updated; WA alerts fired as needed
+**Outputs:** Reply posted on BHW; DB updated; Telegram alerts fired as needed
 **Called by:** Inbox Monitor, Follow-Up System
 **Exports:** `handleConversation`, `sendConversationReply`
 
@@ -242,7 +242,7 @@ database   →  PostgreSQL via pg Pool; queries.js is the only DB interface
    - Creates `outreach_conversations` row, `outreach_dms` row
    - Marks target as `dm_sent`
    - Schedules 3 follow-ups in `outreach_follow_ups` (day 3, 7, 14)
-   - Sends WA preview/alert
+   - Sends Telegram preview/alert
    - After every DM: runs `checkOutreachInbox` + `runOutreachFollowUps(limit=1)`
 5. After full batch: final `runOutreachFollowUps` sweep
 6. Sleeps until next daily window
@@ -311,12 +311,12 @@ database   →  PostgreSQL via pg Pool; queries.js is the only DB interface
 | `generateDMReply(history, latestMsg, msgCount)` | Reply to a BHW DM | Conversation Engine |
 | `generateFollowUp(title, desc, days, prevMsgs)` | Follow-up text (tone shifts by day) | DM Engine (scheduling) |
 | `detectUrgencyAI(text)` | Two-stage keyword + AI urgency detector | DM Engine, Conversation Engine |
-| `scoreLeadHotness(title, desc, history)` | 1–10 hotness score for WA alert threshold | DM Engine |
+| `scoreLeadHotness(title, desc, history)` | 1–10 hotness score for Telegram alert threshold | DM Engine |
 | `classifyThreadRelevance(title, snippet)` | Community thread relevance classifier | Community Commenter |
 | `generateCommunityComment(title, snippet, tips, category)` | Organic forum reply (no promo) | Community Commenter |
 | `generateThreadsOwnerOutreachDMAndFollowUps(title, desc, username)` | All 4 messages in one API call for Pipeline B | Threads Owner Outreach |
 | `generateThreadsOwnerOutreachReply(title, desc, history)` | Contextual reply for Pipeline B | Outreach Inbox |
-| `callAI(system, user, opts)` | Raw AI call — used by Command Center for NL intent parsing | Command Center |
+| `callAI(system, user, opts)` | Raw AI call — internal use only | (AI Engine internal) |
 
 **Personas injected:**
 - Pipeline A functions → `zeePersona.buildSystemPrompt()` (Bitbash agency voice)
@@ -378,7 +378,7 @@ Defines Zeeshan as independent freelance developer:
 ## Notifications & Control
 
 ### `src/services/alerts.js` — Alerts Service
-**Role:** WhatsApp notification dispatcher — sends all bot events to Zeeshan's WA group.
+**Role:** Telegram notification dispatcher — sends all bot events to Zeeshan's Telegram group.
 
 **Alert types:**
 
@@ -392,48 +392,50 @@ Defines Zeeshan as independent freelance developer:
 | `sendCallReminder(username, url, urgentLine, context)` | Urgency detected |
 | `sendDailyReport(stats)` | 9 AM daily summary |
 
-**Transport:** `sendToGroup()` from `whatsappClient.js` (whatsapp-web.js)
+**Transport:** `sendToGroup()` from `telegramClient.js` (Telegraf)
 
 ---
 
 ### `src/services/commandCenter.js` — Command Center
-**Role:** Two-way WhatsApp control panel — listens for commands in the WA group.
+**Role:** Two-way Telegram control panel — listens for slash commands in the Telegram group.
 
 **Available commands:**
 
 | Command | Handler |
 |---|---|
-| `status` | Full system snapshot (session, pause, mode, today's stats) |
-| `stats` | Today's numbers |
-| `leads` | Lead funnel (scraped → qualified → commented → DM'd → replied → converted) |
-| `handoffs` | Conversations waiting for Zeeshan |
-| `convos` | Active conversation counts |
-| `followups` | Pending follow-up count + next due |
-| `session` | BHW cookie health |
-| `pause` / `resume` | Freeze/unfreeze all engines |
-| `dryrun on/off` | Toggle safe/live mode |
-| `force report` | Send daily report immediately |
-| `community` | Community comment stats |
-| `convert <user>` | Mark lead as converted |
-| `skip <user>` | Disqualify a lead |
-| `pause followup <user>` | Stop chasing a specific lead |
-| `help` | Command list |
+| `/status` | Full system snapshot (session, pause, mode, today's stats) |
+| `/stats` | Today's numbers |
+| `/leads` | Lead funnel (scraped → qualified → commented → DM'd → replied → converted) |
+| `/handoffs` | Conversations waiting for Zeeshan |
+| `/convos` | Active conversation counts |
+| `/followups` | Pending follow-up count + next due |
+| `/session` | BHW cookie health |
+| `/pause` / `/resume` | Freeze/unfreeze all engines |
+| `/dryrun on/off` | Toggle safe/live mode |
+| `/forcereport` | Send daily report immediately |
+| `/community` | Community comment stats |
+| `/convert <user>` | Mark lead as converted |
+| `/skip <user>` | Disqualify a lead |
+| `/pausefollowup <user>` | Stop chasing a specific lead |
+| `/help` | Command list |
 
-Natural language also works — AI parses intent via `callAI`.
+Slash commands only — no AI natural language parsing.
 
-**Inputs:** WA group messages, DB queries, `botState`, `bhwSession`
-**Outputs:** WA group replies; DB mutations (convert, skip, pause follow-ups)
+**Inputs:** Telegram group messages, DB queries, `botState`, `bhwSession`
+**Outputs:** Telegram group replies; DB mutations (convert, skip, pause follow-ups)
 
 ---
 
-### `src/services/whatsappClient.js` — WhatsApp Client
-**Role:** Shared `whatsapp-web.js` singleton used by alerts and command center.
+### `src/services/telegramClient.js` — Telegram Client
+**Role:** Shared Telegraf singleton used by alerts and command center.
 
-- Session persisted in `.wwebjs_auth/`
-- `initWhatsApp()` — starts client, QR scan on first run
-- `sendToGroup(text)` — sends message to the configured WA group
+- No session file, no QR scan — stateless bot token auth
+- `initTelegram()` — starts Telegraf bot via long-polling
+- `sendToGroup(text)` — sends message (HTML parse mode) to the configured Telegram group
 - `onMessage(handler)` — registers message listener (used by command center)
+- `getBot()` — returns the Telegraf instance (for slash command registration)
 - `isReady()` / `getGroupId()` — state accessors
+- `markdownToHtml(text)` — internal: converts `*bold*` / `_italic_` / `` `code` `` to HTML
 
 ---
 
@@ -525,7 +527,7 @@ Key config groups:
 - `config.openai` — model, API key, log prompts
 - `config.bhw` — username, scrape intervals, base URL
 - `config.bot` — typing speeds, daily caps, follow-up days
-- `config.whatsapp` — WA group name
+- `config.telegram` — bot token, group chat ID
 - `config.outreach` — OUTREACH_ENABLED, daily cap, active window, follow-up days
 
 ---
@@ -572,11 +574,10 @@ index.js (orchestrator)
   │       ├─► Outreach Follow-Up
   │       └─► Outreach Inbox ──────► aiEngine.generateThreadsOwnerOutreachReply
   │
-  ├─► Command Center ──────────────► aiEngine.callAI (NL intent parsing)
-  │                                ► botState (pause/resume/dryRun)
+  ├─► Command Center ──────────────► botState (pause/resume/dryRun)
   │                                ► DB queries (convert, skip, stats)
   │
-  ├─► alerts (WhatsApp) ───────────► whatsappClient.sendToGroup
+  ├─► alerts (Telegram) ───────────► telegramClient.sendToGroup
   │
   └─► botState ────────────────────► all engines check isPaused() each tick
 ```
@@ -592,7 +593,7 @@ index.js (orchestrator)
 | GAP-05 | `aiEngine.js`, `queries.js` | DB column is `niche_match_score INTEGER`; AI returns `confidence FLOAT 0–1`. Migration needed. |
 | GAP-06 | `scraper/index.js`, `queries.js`, `commandCenter.js` | Leads with confidence 0.40–0.69 (tier='maybe') treated same as auto. Need manual review queue. |
 | GAP-10 | `utils/botState.js`, `database/init.js`, `queries.js` | `botState` pause is in-memory — lost on service restart. Should persist to a `bot_state` DB table. |
-| GAP-11 | `database/queries.js`, `services/alerts.js` | `sendDailyReport()` sends stats via WA but never writes them to the `daily_reports` table. |
+| GAP-11 | `database/queries.js`, `services/alerts.js` | `sendDailyReport()` sends stats via Telegram but never writes them to the `daily_reports` table. |
 
 ### Resolved
 
@@ -635,7 +636,7 @@ This project uses specialised OpenCode agents in `.opencode/agents/`. Each agent
 | threads owner outreach, outreach follow-up, outreach inbox, Pipeline B, `outreach_targets`, seed targets, `OUTREACH_ENABLED` | `pipeline-b-dev.md` |
 | AI, prompt, persona, `aiEngine`, `zeePersona`, `outreachPersona`, `generateCommentPitch`, `generateDMOutreach`, `generateDMReply`, `qualifyLead`, token, `gpt-4o-mini` | `ai-engine-dev.md` |
 | database, SQL, migration, schema, `queries.js`, `init.js`, table, column, `pg`, GAP-05, GAP-06, GAP-10, GAP-11 | `db-admin.md` |
-| WhatsApp, alerts, command center, WA group, `sendToGroup`, `commandCenter`, `whatsappClient`, QR scan | `whatsapp-ops.md` |
+| Telegram, alerts, command center, Telegram group, `sendToGroup`, `commandCenter`, `telegramClient`, bot token, group chat ID | `telegram-ops.md` |
 | deploy, PM2, SCP, Windows, RDP, `.env`, service restart, production, `ecosystem.config` | `deployer.md` |
 | code review, PR review, refactor, test, quality, lint | `code-reviewer.md` |
 

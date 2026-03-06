@@ -31,8 +31,9 @@ export const config = {
     baseUrl: 'https://www.blackhatworld.com/forums/hire-a-freelancer.76/',
   },
   
-  whatsapp: {
-    groupName: process.env.WA_GROUP_NAME || 'Bitbash BHW Bot',
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN,
+    groupId:  process.env.TELEGRAM_GROUP_ID || '-5054203181',
   },
 
   bot: {
