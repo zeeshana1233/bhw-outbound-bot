@@ -21,9 +21,12 @@
  * ── ENV VARS NEEDED ───────────────────────────────────────────────────────
  *  TELEGRAM_BOT_TOKEN  — bot token from @BotFather
  *  TELEGRAM_GROUP_ID   — numeric chat ID of the control group (negative for groups)
+ *  TELEGRAM_PROXY_URL  — (optional) HTTP/SOCKS5 proxy for servers where Telegram is blocked
+ *                        e.g. http://user:pass@proxy-host:8080  or  socks5://127.0.0.1:1080
  */
 
 import { Telegraf } from 'telegraf';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import logger from '../utils/logger.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -60,10 +63,19 @@ export async function initTelegram() {
   }
 
   logger.info('[Telegram] Initializing bot…');
+
+  // ── Optional proxy (for servers where Telegram is ISP-blocked) ───────────
+  const proxyUrl = process.env.TELEGRAM_PROXY_URL;
+  const agent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
+  if (proxyUrl) {
+    logger.info(`[Telegram] Using proxy: ${proxyUrl.replace(/:\/\/.*@/, '://<credentials>@')}`);
+  }
+
   _bot = new Telegraf(token, {
     telegram: {
       apiRoot: 'https://api.telegram.org',
       webhookReply: false,
+      ...(agent ? { agent } : {}),
     },
     handlerTimeout: 30_000,
   });
