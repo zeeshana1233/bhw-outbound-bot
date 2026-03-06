@@ -48,7 +48,10 @@ class BHWScraper {
     logger.info('Initializing real browser for scraping...');
     
     // Connect with puppeteer-real-browser for CloudFlare bypass
-    const { browser, page } = await connect({
+    // Wrap in a timeout — on Windows, connect() can hang indefinitely if
+    // Chromium fails to launch (no error thrown, promise never resolves).
+    const CONNECT_TIMEOUT_MS = 90_000; // 90 seconds
+    const connectPromise = connect({
       headless: 'auto',
       args: [
         '--no-sandbox',
@@ -64,9 +67,13 @@ class BHWScraper {
       turnstile: true,
       customConfig: {},
       connectOption: {},
-      disableXvfb: false,
+      disableXvfb: true,   // must be true on Windows — Xvfb is Linux-only
       ignoreAllFlags: false
     });
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`puppeteer connect() timed out after ${CONNECT_TIMEOUT_MS / 1000}s`)), CONNECT_TIMEOUT_MS)
+    );
+    const { browser, page } = await Promise.race([connectPromise, timeoutPromise]);
 
     this.browser = browser;
     this.page = page;
