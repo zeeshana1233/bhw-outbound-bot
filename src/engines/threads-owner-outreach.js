@@ -31,6 +31,7 @@ import {
   updateOutreachTargetScraped,
   skipOutreachTarget,
   markOutreachTargetDMSent,
+  markOutreachTargetPreviewed,
   createOutreachConversation,
   updateOutreachConversationUrl,
   updateOutreachConversationStatus,
@@ -50,6 +51,8 @@ const WINDOW_JITTER_MIN    = config.outreach.windowJitterMin;  // ±30 min
 const MIN_GAP_MS           = config.outreach.minGapMinutes * 60 * 1000;  // 90 min
 const MAX_GAP_MS           = 4 * 60 * 60 * 1000;              // 4 hours
 const DAILY_CAP            = config.outreach.dailyCap;         // 5
+const TEST_MODE            = process.env.OUTREACH_TEST_MODE === 'true'; // bypass timing gates
+const PREVIEW_MODE         = config.outreach.previewMode;      // WA-only: no BHW send, rotate targets
 const FOLLOW_UP_DAYS       = [
   config.outreach.followUp1Days,  // 3
   config.outreach.followUp2Days,  // 7
@@ -335,6 +338,40 @@ async function processOutreachTarget(target, dryRun = false) {
     return false;
   }
 
+  // ── Preview mode: WA notify only, no BHW send, rotate target ────────────
+  if (PREVIEW_MODE) {
+    const progress = await getOutreachProgress().catch(() => null);
+    const progressLine = progress
+      ? `Progress: ${progress.dm_sent + progress.replied} / ${progress.total} done — ${progress.pending} remaining`
+      : '';
+
+    await alerts.sendRawAlert(
+      `${tag} 👁 *PREVIEW*\n` +
+      `To: @${posterUsername}\n` +
+      `Thread: "${title.slice(0, 80)}"\n\n` +
+      `*Initial DM:*\n${dmText}\n\n` +
+      `*Follow-up #1 (Day ${FOLLOW_UP_DAYS[0]}):*\n${generated.followUp1}\n\n` +
+      `*Follow-up #2 (Day ${FOLLOW_UP_DAYS[1]}):*\n${generated.followUp2}\n\n` +
+      `*Follow-up #3 (Day ${FOLLOW_UP_DAYS[2]}):*\n${generated.followUp3}\n\n` +
+      `⚠️ No BHW DM sent — preview mode\n` +
+      progressLine
+    ).catch(() => {});
+
+    await markOutreachTargetPreviewed(target.id);
+    await logActivity({
+      actionType:  'threads_owner_outreach_previewed',
+      leadId:      null,
+      metadata:    {
+        target_id:       target.id,
+        poster_username: posterUsername,
+        thread_url:      target.thread_url,
+      },
+    }).catch(() => {});
+
+    logger.info(`${tag} ✅ PREVIEW — @${posterUsername} | WA notified | marked previewed | no BHW DM sent`);
+    return true;
+  }
+
   // ── Step 4: Send DM ──────────────────────────────────────────────────────
   const subject   = `Re: ${title}`.slice(0, 60);
   const sendResult = await sendOutreachDM(posterUsername, subject, dmText, dryRun);
@@ -380,15 +417,15 @@ async function processOutreachTarget(target, dryRun = false) {
 
   // ── Step 8: Log activity ─────────────────────────────────────────────────
   await logActivity({
-    action_type: 'threads_owner_outreach_dm_sent',
-    lead_id:     null,
-    metadata:    JSON.stringify({
+    actionType:  'threads_owner_outreach_dm_sent',
+    leadId:      null,
+    metadata:    {
       target_id:       target.id,
       poster_username: posterUsername,
       thread_url:      target.thread_url,
       conversation_id: conv.id,
       dry_run:         dryRun,
-    }),
+    },
   }).catch(() => {});
 
   // ── Step 9: WhatsApp alert ───────────────────────────────────────────────
@@ -514,9 +551,13 @@ export async function startThreadsOwnerOutreach(opts = {}) {
 
   const cycle = async () => {
     // ── Wait for active window ──────────────────────────────────────────────
-    const waitMs  = msUntilNextActiveWindow();
+    const waitMs  = TEST_MODE ? 0 : msUntilNextActiveWindow();
     const waitMin = Math.round(waitMs / 60000);
-    logger.info(`${tag} Next active window in ~${waitMin} min`);
+    if (TEST_MODE) {
+      logger.info(`${tag} TEST_MODE — skipping active window wait, running immediately`);
+    } else {
+      logger.info(`${tag} Next active window in ~${waitMin} min`);
+    }
     await sleep(waitMs);
 
     if (botState.isPaused()) {
@@ -542,8 +583,16 @@ export async function startThreadsOwnerOutreach(opts = {}) {
     logger.info(`${tag} ${targets.length}/${DAILY_CAP} target(s) picked for today's batch (${progress?.pending ?? '?'} total remaining)`);
 
     // ── Scatter send-times across the active window ─────────────────────────
-    const windowMs   = msUntilWindowClose();
-    const sendTimes  = scatterSendTimes(targets.length, windowMs);
+    let sendTimes;
+    if (TEST_MODE) {
+      // In test mode: fire all targets immediately (2-second gaps)
+      const now = Date.now();
+      sendTimes = targets.map((_, i) => new Date(now + i * 2000));
+      logger.info(`${tag} TEST_MODE — scatter disabled, firing immediately`);
+    } else {
+      const windowMs = msUntilWindowClose();
+      sendTimes = scatterSendTimes(targets.length, windowMs);
+    }
 
     logger.info(`${tag} Send schedule for this batch:`);
     sendTimes.forEach((t, i) => {

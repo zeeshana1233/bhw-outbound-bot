@@ -64,5 +64,8 @@ export const config = {
     followUp1Days:      parseInt(process.env.OUTREACH_FOLLOWUP1_DAYS)         || 3,
     followUp2Days:      parseInt(process.env.OUTREACH_FOLLOWUP2_DAYS)         || 7,
     followUp3Days:      parseInt(process.env.OUTREACH_FOLLOWUP3_DAYS)         || 14,
+    // Preview mode: generate + WA notify, skip actual BHW send, mark target 'previewed'
+    // so next cycle picks fresh targets. Flip to false when ready to go live.
+    previewMode:        process.env.OUTREACH_PREVIEW_MODE === 'true',
   },
 };

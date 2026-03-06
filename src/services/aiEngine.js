@@ -12,11 +12,88 @@
  */
 
 import OpenAI from 'openai';
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { config } from '../config/config.js';
 import logger from '../utils/logger.js';
 import { buildSystemPrompt, ZEE_SYSTEM_PROMPT } from './zeePersona.js';
 
 const openai = new OpenAI({ apiKey: config.openai.apiKey });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROMPT LOG UTILITY — saves exact prompts sent to OpenAI for outreach targets
+// ─────────────────────────────────────────────────────────────────────────────
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PROMPT_LOG_DIR = path.resolve(__dirname, '../../docs/prompt-logs');
+
+/**
+ * Write (or append) the exact system + user prompt sent to OpenAI for a
+ * threads-owner outreach target.  Called in two passes:
+ *
+ *   pass='prompt'   — before callAI() — creates the file
+ *   pass='response' — after  callAI() — appends the raw AI response
+ *
+ * Never throws — logging must not break the main flow.
+ */
+async function _saveOutreachPromptLog({ username, title, systemPrompt, userPrompt, rawResponse }) {
+  try {
+    await fs.mkdir(PROMPT_LOG_DIR, { recursive: true });
+
+    // Build filename: outreach-[username]-[titleSlug]-[YYYY-MM-DD].md
+    const slug = (title || 'untitled')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .substring(0, 40);
+    const date = new Date().toISOString().slice(0, 10);
+    const safeName = (username || 'unknown').replace(/[^a-z0-9_-]/gi, '');
+    const filename = `outreach-${safeName}-${slug}-${date}.md`;
+    const filePath = path.join(PROMPT_LOG_DIR, filename);
+
+    if (!rawResponse) {
+      // First pass — write the prompt
+      const timestamp = new Date().toISOString();
+      const content = [
+        `# Outreach Prompt Log`,
+        ``,
+        `- **Username:** @${username || 'unknown'}`,
+        `- **Thread Title:** ${title || '(none)'}`,
+        `- **Date:** ${timestamp}`,
+        ``,
+        `---`,
+        ``,
+        `## System Prompt`,
+        ``,
+        systemPrompt,
+        ``,
+        `---`,
+        ``,
+        `## User Prompt`,
+        ``,
+        userPrompt,
+        ``,
+        `---`,
+        ``,
+        `## AI Response`,
+        ``,
+        `*(generating...)*`,
+        ``,
+      ].join('\n');
+      await fs.writeFile(filePath, content, 'utf8');
+    } else {
+      // Second pass — replace the placeholder with the real response
+      const existing = await fs.readFile(filePath, 'utf8').catch(() => null);
+      if (existing) {
+        const updated = existing.replace('*(generating...)*', rawResponse);
+        await fs.writeFile(filePath, updated, 'utf8');
+      }
+    }
+  } catch (err) {
+    logger.warn(`[aiEngine] _saveOutreachPromptLog failed (non-fatal): ${err.message}`);
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CORE callAI — used by every function below
@@ -771,11 +848,17 @@ Global rules for all four:
   const systemPrompt = buildOutreachSystemPrompt(functionInstructions);
   const userPrompt   = `Thread by @${posterUsername || 'the thread owner'}: "${title}"\n\nDescription:\n${(description || '').substring(0, 800)}\n\nReturn the JSON object with keys: dm, followUp1, followUp2, followUp3.`;
 
+  // Pass 1 — save the exact prompt before sending to OpenAI
+  await _saveOutreachPromptLog({ username: posterUsername, title, systemPrompt, userPrompt });
+
   const raw = await callAI(systemPrompt, userPrompt, {
     temperature:  0.8,
     max_tokens:   700,
     functionName: 'generateThreadsOwnerOutreachDMAndFollowUps',
   });
+
+  // Pass 2 — append the raw AI response to the same file
+  await _saveOutreachPromptLog({ username: posterUsername, title, systemPrompt, userPrompt, rawResponse: raw });
 
   try {
     const parsed = JSON.parse(raw);

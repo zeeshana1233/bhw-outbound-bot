@@ -48,7 +48,7 @@ Mark `[x]` when done. Items marked `[~]` are accepted as-is or won't-do by desig
 ### GAP-07 — No cross-thread 30-day user dedup before DMing (§12.3)
 - **File:** `src/database/queries.js`, `src/engines/dm.js`
 - Same poster on multiple threads within 30 days can get multiple DMs. Need `wasUserDMedRecently()` guard.
-- [ ] Implemented
+- [x] Implemented — `wasUserDMedRecently(username, 30)` added to `queries.js` (checks both Pipeline A `leads` + Pipeline B `outreach_targets`); guard added to `sendDM()` in `dm.js`
 
 ---
 
@@ -116,6 +116,6 @@ Mark `[x]` when done. Items marked `[~]` are accepted as-is or won't-do by desig
 
 | Status | Count |
 |--------|-------|
-| ✅ Done | 7 (GAP-01, 02, 03, 12, 13, 14, 17) |
+| ✅ Done | 8 (GAP-01, 02, 03, 07, 12, 13, 14, 17) |
 | ❌ Won't do | 5 (GAP-04, 08, 09, 15, 16) |
-| ⏳ Pending | 5 (GAP-05, 06, 07, 10, 11) |
+| ⏳ Pending | 4 (GAP-05, 06, 10, 11) |

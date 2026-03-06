@@ -261,14 +261,14 @@ export async function checkOutreachInbox(opts = {}) {
         await updateOutreachConversationStatus(dbConv.id, 'replied', 'us');
 
         await logActivity({
-          action_type: 'threads_owner_outreach_reply_sent',
-          lead_id:     null,
-          metadata:    JSON.stringify({
+          actionType:  'threads_owner_outreach_reply_sent',
+          leadId:      null,
+          metadata:    {
             target_id:       target.id,
             poster_username: otherUsername,
             conversation_id: dbConv.id,
             dry_run:         dryRun,
-          }),
+          },
         }).catch(() => {});
 
         await alerts.sendRawAlert(

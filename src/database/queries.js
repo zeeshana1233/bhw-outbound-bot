@@ -684,6 +684,46 @@ export async function getDailyActionCounts() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CROSS-PIPELINE DM DEDUPLICATION — GAP-07
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Check whether a BHW username has already been DM'd within the last N days,
+ * across BOTH Pipeline A (leads table) and Pipeline B (outreach_targets table).
+ *
+ * Returns true  → skip the DM (user was contacted recently)
+ * Returns false → safe to send
+ *
+ * @param {string} username  - BHW poster_username to check
+ * @param {number} [days=30] - Look-back window in days
+ */
+export async function wasUserDMedRecently(username, days = 30) {
+  const sql = `
+    SELECT 1
+    FROM (
+      -- Pipeline A: main DM flow
+      SELECT dm_sent_at AS contacted_at
+      FROM leads
+      WHERE poster_username = $1
+        AND dm_sent = true
+        AND dm_sent_at >= NOW() - ($2 || ' days')::INTERVAL
+
+      UNION ALL
+
+      -- Pipeline B: threads-owner outreach
+      SELECT contacted_at
+      FROM outreach_targets
+      WHERE poster_username = $1
+        AND status IN ('dm_sent', 'replied', 'cold')
+        AND contacted_at >= NOW() - ($2 || ' days')::INTERVAL
+    ) AS recent_contacts
+    LIMIT 1
+  `;
+  const result = await query(sql, [username, days]);
+  return result.rows.length > 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // THREADS OWNER OUTREACH MODULE — Query Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -764,6 +804,21 @@ export async function markOutreachTargetDryRunSent(targetId) {
   const sql = `
     UPDATE outreach_targets
     SET status     = 'dry_run_sent',
+        updated_at = NOW()
+    WHERE id = $1
+  `;
+  await query(sql, [targetId]);
+}
+
+/**
+ * Mark a target as previewed (OUTREACH_PREVIEW_MODE=true).
+ * Excluded from getPendingOutreachTargets() so next cycle picks fresh targets.
+ * Reset to 'pending' when ready to go live: UPDATE outreach_targets SET status='pending' WHERE status='previewed';
+ */
+export async function markOutreachTargetPreviewed(targetId) {
+  const sql = `
+    UPDATE outreach_targets
+    SET status     = 'previewed',
         updated_at = NOW()
     WHERE id = $1
   `;

@@ -41,6 +41,7 @@ import {
   incrementConversationMessages,
   updateConversationBhwUrl,
   getLeadById,
+  wasUserDMedRecently,
 } from '../database/queries.js';
 import { config } from '../config/config.js';
 
@@ -257,6 +258,19 @@ export async function sendDM(lead, dmText, opts = {}) {
     }
   } catch (checkErr) {
     logger.error(`Failed DB freshness check for lead #${lead.id}:`, checkErr.message);
+  }
+
+  // ── GUARD: 30-day cross-pipeline dedup (GAP-07) ──────────────────────
+  // Prevents DMing the same BHW user twice within 30 days, even if they
+  // posted multiple threads or were already contacted via Pipeline B.
+  try {
+    const recentlyDMed = await wasUserDMedRecently(lead.poster_username, 30);
+    if (recentlyDMed) {
+      logger.warn(`@${lead.poster_username} was already DM'd within the last 30 days (cross-pipeline dedup) — skipping.`);
+      return { success: false, reason: 'recently_dmed' };
+    }
+  } catch (dedupErr) {
+    logger.error(`Failed 30-day dedup check for @${lead.poster_username}:`, dedupErr.message);
   }
 
   if (DRY_RUN) {

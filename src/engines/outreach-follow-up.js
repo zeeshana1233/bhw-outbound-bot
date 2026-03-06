@@ -162,14 +162,14 @@ export async function runOutreachFollowUps(opts = {}) {
       await updateOutreachConversationStatus(fu.conversation_id, 'waiting_reply', 'us');
 
       await logActivity({
-        action_type: 'threads_owner_outreach_follow_up_sent',
-        lead_id:     null,
-        metadata:    JSON.stringify({
-          target_id:      fu.target_id,
-          conversation_id: fu.conversation_id,
+        actionType:  'threads_owner_outreach_follow_up_sent',
+        leadId:      null,
+        metadata:    {
+          target_id:        fu.target_id,
+          conversation_id:  fu.conversation_id,
           follow_up_number: fu.follow_up_number,
-          dry_run: dryRun,
-        }),
+          dry_run:          dryRun,
+        },
       }).catch(() => {});
 
       await alerts.sendRawAlert(
