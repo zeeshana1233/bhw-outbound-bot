@@ -12,6 +12,13 @@ export async function initDatabase() {
     logger.info('Database connection established');
 
     // Safe migrations — add columns that may not exist in older schemas
+
+    // leads table — columns added in later versions of the scraper
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS poster_url TEXT;`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS post_date TIMESTAMPTZ;`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS thread_age_category VARCHAR(20);`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';`);
+
     await client.query(`
       ALTER TABLE conversations
       ADD COLUMN IF NOT EXISTS bhw_conversation_url TEXT;
