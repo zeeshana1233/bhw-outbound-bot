@@ -78,32 +78,37 @@ export async function initTelegram() {
 
   // ── Launch (long-polling) ─────────────────────────────────────────────────
   // bot.launch() runs indefinitely — do NOT await it directly.
-  // Instead, verify the connection with getMe() first, then launch in background.
+  // Verify connection with getMe() first (10s timeout), then launch in background.
+  // If Telegram is unreachable the bot keeps running — alerts are just skipped.
   try {
-    const me = await _bot.telegram.getMe();
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout after 10s')), 10000)
+    );
+    const me = await Promise.race([_bot.telegram.getMe(), timeout]);
     logger.info(`[Telegram] Connected as @${me.username} (id: ${me.id})`);
+
+    // Launch long-polling in background (intentionally NOT awaited)
+    _bot.launch().catch((err) => {
+      logger.error(`[Telegram] Long-polling crashed: ${err.message}`);
+    });
+
+    _ready = true;
+    logger.info('[Telegram] Bot launched and ready.');
   } catch (err) {
     logger.error(`[Telegram] Failed to connect to Telegram API: ${err.message}`);
-    logger.error('[Telegram] Check TELEGRAM_BOT_TOKEN and network connectivity.');
+    logger.warn('[Telegram] Bot will continue without Telegram — alerts/commands disabled.');
     _bot = null;
+    _ready = false;
     return null;
   }
 
-  // Launch long-polling in background (intentionally NOT awaited)
-  _bot.launch().catch((err) => {
-    logger.error(`[Telegram] Long-polling crashed: ${err.message}`);
-  });
-
-  _ready = true;
-
-  logger.info('[Telegram] Bot launched and ready.');
   if (_groupId) {
     logger.info(`[Telegram] Control group ID: ${_groupId}`);
   }
 
   // ── Graceful shutdown hooks ───────────────────────────────────────────────
-  process.once('SIGINT',  () => _bot.stop('SIGINT'));
-  process.once('SIGTERM', () => _bot.stop('SIGTERM'));
+  process.once('SIGINT',  () => _bot && _bot.stop('SIGINT'));
+  process.once('SIGTERM', () => _bot && _bot.stop('SIGTERM'));
 
   return _bot;
 }
