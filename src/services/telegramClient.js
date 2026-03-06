@@ -77,7 +77,23 @@ export async function initTelegram() {
   });
 
   // ── Launch (long-polling) ─────────────────────────────────────────────────
-  await _bot.launch();
+  // bot.launch() runs indefinitely — do NOT await it directly.
+  // Instead, verify the connection with getMe() first, then launch in background.
+  try {
+    const me = await _bot.telegram.getMe();
+    logger.info(`[Telegram] Connected as @${me.username} (id: ${me.id})`);
+  } catch (err) {
+    logger.error(`[Telegram] Failed to connect to Telegram API: ${err.message}`);
+    logger.error('[Telegram] Check TELEGRAM_BOT_TOKEN and network connectivity.');
+    _bot = null;
+    return null;
+  }
+
+  // Launch long-polling in background (intentionally NOT awaited)
+  _bot.launch().catch((err) => {
+    logger.error(`[Telegram] Long-polling crashed: ${err.message}`);
+  });
+
   _ready = true;
 
   logger.info('[Telegram] Bot launched and ready.');
