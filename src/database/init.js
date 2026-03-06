@@ -19,6 +19,15 @@ export async function initDatabase() {
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS thread_age_category VARCHAR(20);`);
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';`);
 
+    // activity_log table — columns missing from initial schema
+    await client.query(`ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS description TEXT;`);
+    await client.query(`ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'success';`);
+    await client.query(`ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS error_message TEXT;`);
+
+    // dms table — AI tracing columns
+    await client.query(`ALTER TABLE dms ADD COLUMN IF NOT EXISTS generated_by TEXT;`);
+    await client.query(`ALTER TABLE dms ADD COLUMN IF NOT EXISTS prompt_used TEXT;`);
+
     await client.query(`
       ALTER TABLE conversations
       ADD COLUMN IF NOT EXISTS bhw_conversation_url TEXT;
