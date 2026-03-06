@@ -60,7 +60,13 @@ export async function initTelegram() {
   }
 
   logger.info('[Telegram] Initializing bot…');
-  _bot = new Telegraf(token);
+  _bot = new Telegraf(token, {
+    telegram: {
+      apiRoot: 'https://api.telegram.org',
+      webhookReply: false,
+    },
+    handlerTimeout: 30_000,
+  });
 
   // ── Inbound messages — fan out to all registered listeners ────────────────
   _bot.on('message', async (ctx) => {

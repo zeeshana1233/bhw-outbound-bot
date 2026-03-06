@@ -403,6 +403,13 @@ async function main() {
 // ── Graceful shutdown ───────────────────────────────────────────────────────────
 process.on('SIGINT',  () => { logger.info('Shutting down…'); process.exit(0); });
 process.on('SIGTERM', () => { logger.info('Shutting down…'); process.exit(0); });
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled promise rejection:', reason?.message || reason);
+});
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception:', err.message);
+  process.exit(1);
+});
 
 main();
 
