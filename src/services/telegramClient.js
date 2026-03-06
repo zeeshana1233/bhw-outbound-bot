@@ -121,7 +121,7 @@ export async function initTelegram() {
  */
 export async function sendToGroup(text) {
   if (!_ready || !_bot) {
-    logger.warn('[Telegram] Bot not ready — message skipped:', text.slice(0, 80));
+    logger.warn(`[Telegram] Bot not ready — message skipped: ${text.slice(0, 80)}`);
     return { skipped: true };
   }
 

@@ -26,7 +26,7 @@ async function sendAlert(text) {
   try {
     const result = await sendToGroup(text);
     if (result?.skipped) {
-      logger.info('[Alerts] Telegram not ready — skipped:', text.substring(0, 80));
+      logger.info(`[Alerts] Telegram not ready — skipped: ${text.substring(0, 80)}`);
     } else if (result?.sent === false) {
       logger.warn('[Alerts] sendToGroup failed:', result.error || 'unknown error');
     } else {
