@@ -19,6 +19,17 @@ export async function initDatabase() {
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS thread_age_category VARCHAR(20);`);
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';`);
 
+    // leads qualification columns
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS is_qualified BOOLEAN DEFAULT FALSE;`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualification_reason TEXT;`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS niche_match_score INTEGER DEFAULT 0;`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS tier VARCHAR(20);`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS pitch_angle TEXT;`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS commented BOOLEAN DEFAULT FALSE;`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS dm_sent BOOLEAN DEFAULT FALSE;`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'new';`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS converted BOOLEAN DEFAULT FALSE;`);
+
     // activity_log table — columns missing from initial schema
     await client.query(`ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS description TEXT;`);
     await client.query(`ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'success';`);
