@@ -1,11 +1,15 @@
 // Quick Telegram connectivity test — node test-tg.js
+// Tests: direct IP TCP, HTTPS direct IP, HTTPS via proxy, HTTPS via hostname
 import https from 'https';
 import net from 'net';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8784111112:AAF_HiA_E9-FgFy5qG3aMtR-m7JBSRzNZwI';
 const KNOWN_IP = '149.154.166.110';
+const PROXY_URL = process.env.TELEGRAM_PROXY_URL || 'http://364a87d67519885f4520__cr.gb:c55e092b8405598b@gw.dataimpulse.com:10000';
 
 console.log('--- Telegram connectivity test ---');
+console.log('Proxy:', PROXY_URL.replace(/:\/\/.*@/, '://<creds>@'));
 
 // Test 1: Direct IP TCP
 const sock = net.createConnection({ host: KNOWN_IP, port: 443 });
@@ -26,47 +30,27 @@ sock.on('error', e => {
 });
 
 function runTest2() {
-  // Test 2: HTTPS via direct IP (bypassing DNS/SNI issues)
-  const options = {
-    hostname: KNOWN_IP,
-    port: 443,
-    path: `/bot${TOKEN}/getMe`,
-    method: 'GET',
-    rejectUnauthorized: false, // skip cert validation for direct-IP call
-    timeout: 8000,
-  };
-  const req = https.request(options, (res) => {
-    let data = '';
-    res.on('data', c => data += c);
-    res.on('end', () => {
-      console.log('[2] HTTPS direct IP: OK', data.slice(0, 120));
-      runTest3();
-    });
-  });
-  req.on('timeout', () => { req.destroy(); console.log('[2] HTTPS direct IP: TIMEOUT'); runTest3(); });
-  req.on('error', e => { console.log('[2] HTTPS direct IP: ERROR', e.message); runTest3(); });
-  req.end();
-}
-
-function runTest3() {
-  // Test 3: HTTPS via hostname
+  // Test 2: HTTPS via proxy
+  console.log('[2] Testing HTTPS via proxy...');
+  const agent = new HttpsProxyAgent(PROXY_URL);
   const options = {
     hostname: 'api.telegram.org',
     port: 443,
     path: `/bot${TOKEN}/getMe`,
     method: 'GET',
-    timeout: 8000,
+    agent,
+    timeout: 12000,
   };
   const req = https.request(options, (res) => {
     let data = '';
     res.on('data', c => data += c);
     res.on('end', () => {
-      console.log('[3] HTTPS hostname: OK', data.slice(0, 120));
+      console.log('[2] HTTPS via proxy: OK', data.slice(0, 120));
       process.exit(0);
     });
   });
-  req.on('timeout', () => { req.destroy(); console.log('[3] HTTPS hostname: TIMEOUT'); process.exit(1); });
-  req.on('error', e => { console.log('[3] HTTPS hostname: ERROR', e.message); process.exit(1); });
+  req.on('timeout', () => { req.destroy(); console.log('[2] HTTPS via proxy: TIMEOUT'); process.exit(1); });
+  req.on('error', e => { console.log('[2] HTTPS via proxy: ERROR', e.message); process.exit(1); });
   req.end();
 }
 
