@@ -4,27 +4,25 @@
  * [THREADS-OWNER-OUTREACH] module
  *
  * Daily flow:
- *   1. Wait for the active window to open (15:00–07:00 UTC, ±30-min jitter)
- *   2. Pick 5 pending targets from outreach_targets (FIFO)
- *   3. Randomly scatter 5 send-times across the 16-hour window
- *      (min gap: 90 min, max gap: 4 hours between any two)
- *   4. For each target at its scheduled time:
+ *   1. Send up to 5 DMs per day, randomly spread across the full 24 hours
+ *      (min gap: 90 min between any two DMs)
+ *   2. For each target:
  *      duplicate-check → scrape → generate DM → send → store → schedule follow-ups
- *   5. After all 5 sent → runOutreachFollowUps() + checkOutreachInbox()
- *   6. Sleep until the next day's window
+ *   3. After all DMs sent → runOutreachFollowUps() + checkOutreachInbox()
+ *   4. Sleep ~24 hours, then repeat
  *
  * Session strategy: HYBRID — shares the singleton bhwSession (no second browser).
  * Session conflict prevention: yields to the existing queue via checkBusy retry.
  */
 
 import logger                           from '../utils/logger.js';
-import { sleep, randomDelay }           from '../utils/helpers.js';
+import { sleep, randomDelay, sanitizeBHWMessage } from '../utils/helpers.js';
 import bhwSession                       from '../utils/bhwSession.js';
 import aiEngine                         from '../services/aiEngine.js';
 import alerts                           from '../services/alerts.js';
 import { botState }                     from '../utils/botState.js';
 import { config }                       from '../config/config.js';
-import { getLeadByPosterUsername, logActivity, getOutreachProgress } from '../database/queries.js';
+import { getLeadByPosterUsername, logActivity, getOutreachProgress, getDueOutreachFollowUps } from '../database/queries.js';
 import {
   getPendingOutreachTargets,
   getOutreachTargetByUsername,
@@ -41,15 +39,13 @@ import {
 }                                       from '../database/queries.js';
 import { runOutreachFollowUps }         from './outreach-follow-up.js';
 import { checkOutreachInbox }           from './outreach-inbox.js';
+import { query as dbQuery }             from '../database/init.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIG CONSTANTS
 // ─────────────────────────────────────────────────────────────────────────────
-const ACTIVE_START_UTC     = config.outreach.activeStartUtc;   // 15 = 3pm UTC
-const ACTIVE_END_UTC       = config.outreach.activeEndUtc;     // 7  = 7am UTC
-const WINDOW_JITTER_MIN    = config.outreach.windowJitterMin;  // ±30 min
 const MIN_GAP_MS           = config.outreach.minGapMinutes * 60 * 1000;  // 90 min
-const MAX_GAP_MS           = 4 * 60 * 60 * 1000;              // 4 hours
+const MAX_GAP_MS           = 2 * 60 * 60 * 1000;              // 2 hours
 const DAILY_CAP            = config.outreach.dailyCap;         // 5
 const TEST_MODE            = process.env.OUTREACH_TEST_MODE === 'true'; // bypass timing gates
 const PREVIEW_MODE         = config.outreach.previewMode;      // WA-only: no BHW send, rotate targets
@@ -66,9 +62,15 @@ const BHW_BASE = 'https://www.blackhatworld.com';
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function moveMouseAndClick(page, selector) {
-  const element = await page.$(selector);
-  if (!element) throw new Error(`Element not found: ${selector}`);
-  const box = await element.boundingBox();
+  // Retry up to 3 times — boundingBox can return null briefly after scroll reflow
+  let box = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const element = await page.$(selector);
+    if (!element) throw new Error(`Element not found: ${selector}`);
+    box = await element.boundingBox();
+    if (box) break;
+    if (attempt < 3) await sleep(randomDelay(400, 800));
+  }
   if (!box) throw new Error(`Could not get bounding box for: ${selector}`);
   const x = box.x + box.width  * (0.3 + Math.random() * 0.4);
   const y = box.y + box.height * (0.3 + Math.random() * 0.4);
@@ -82,12 +84,12 @@ async function smoothScrollToElement(page, selector) {
   await page.evaluate((sel) => {
     const el = document.querySelector(sel);
     if (el) {
-      const rect   = el.getBoundingClientRect();
-      const scrollY = window.scrollY + rect.top - Math.floor(window.innerHeight * 0.35);
-      window.scrollTo({ top: scrollY, behavior: 'smooth' });
+      // scrollIntoView is synchronous and guarantees the element is in the viewport
+      el.scrollIntoView({ block: 'center', behavior: 'instant' });
     }
   }, selector);
-  await sleep(randomDelay(600, 1200));
+  // Wait for any layout reflow after scroll
+  await sleep(randomDelay(800, 1400));
 }
 
 async function humanTypeInBrowser(page, text) {
@@ -118,13 +120,20 @@ async function humanTypeInBrowser(page, text) {
     ) {
       await page.keyboard.type(TYPO_MAP[char.toLowerCase()]);
       await sleep(randomDelay(80, 180));
-      await page.keyboard.press('Backspace');
+      // Use keyboard.down + keyboard.up to avoid stuck key state with press()
+      await page.keyboard.down('Backspace');
+      await sleep(randomDelay(30, 80));
+      await page.keyboard.up('Backspace');
       await sleep(randomDelay(100, 250));
     }
     await page.keyboard.type(char);
     await sleep(randomDelay(45, 140));
     if ('.!?,;:'.includes(char)) await sleep(randomDelay(150, 400));
   }
+  // Release any potentially stuck modifier keys after typing
+  await page.keyboard.up('Shift').catch(() => {});
+  await page.keyboard.up('Control').catch(() => {});
+  await page.keyboard.up('Alt').catch(() => {});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,6 +151,12 @@ async function scrapeThread(threadUrl) {
   await bhwSession.navigateTo(threadUrl);
   await sleep(randomDelay(1500, 3000));
 
+  // Detect Cloudflare / BHW error pages — throw so the retry loop catches it
+  const pageTitle = await page.title().catch(() => '');
+  if (pageTitle.toLowerCase().includes('oops') || pageTitle.toLowerCase().includes('error')) {
+    throw new Error(`BHW error page detected: "${pageTitle}" — may be a temporary Cloudflare block`);
+  }
+
   try {
     // OP body — first post on the page
     const description = await page.evaluate(() => {
@@ -151,12 +166,38 @@ async function scrapeThread(threadUrl) {
       return opBody ? opBody.innerText.trim() : null;
     });
 
-    // Poster username — from the first post author block
+    // Poster username — from the first post author block.
+    // BHW stores the canonical DM-resolvable username in the data-username attribute
+    // on the post wrapper or the author link. Text content / href slugs can differ
+    // (display name with spaces, or lowercase hyphenated slug) and won't resolve.
     const posterUsername = await page.evaluate(() => {
+      // 1. data-author on the first post's article/li wrapper (most reliable)
+      const postEl = document.querySelector(
+        'article.message[data-author], li.message[data-author], .message[data-author]'
+      );
+      if (postEl) {
+        const author = postEl.getAttribute('data-author');
+        if (author && author.trim() && !author.includes(' ')) return author.trim();
+      }
+
+      // 2. data-username on the author link itself
       const authorEl = document.querySelector(
         '.message-name a.username, .message-userDetails .username, h4.message-name a'
       );
-      return authorEl ? authorEl.textContent.trim() : null;
+      if (authorEl) {
+        const dataUsername = authorEl.getAttribute('data-username');
+        if (dataUsername && dataUsername.trim() && !dataUsername.includes(' ')) return dataUsername.trim();
+
+        // 3. Extract username from profile href: /members/username.12345/ → username
+        const href = authorEl.getAttribute('href') || '';
+        const hrefMatch = href.match(/\/members\/([^./]+)\.\d+\/?/);
+        if (hrefMatch && hrefMatch[1]) return hrefMatch[1].trim();
+
+        // 4. text content — last resort (may be display name, caught by spaces guard downstream)
+        return authorEl.textContent.trim() || null;
+      }
+
+      return null;
     });
 
     return { description: description || null, posterUsername: posterUsername || null };
@@ -189,47 +230,149 @@ async function sendOutreachDM(posterUsername, subject, dmText, dryRun = false) {
     await bhwSession.navigateTo(url);
     await sleep(randomDelay(1500, 3000));
 
-    // Fill subject
+    // Detect BHW error page — user account may be banned/restricted from receiving DMs
+    const dmPageTitle = await page.title().catch(() => '');
+    if (dmPageTitle.toLowerCase().includes('oops') || dmPageTitle.toLowerCase().includes('error')) {
+      throw new Error(`BHW_ACCOUNT_RESTRICTED: "${dmPageTitle}" — user may not be able to receive DMs`);
+    }
+
+    // ── Fill subject ─────────────────────────────────────────────────────────
     const subjectSelector = 'input[name="title"]';
     await smoothScrollToElement(page, subjectSelector);
     await moveMouseAndClick(page, subjectSelector);
     await sleep(randomDelay(300, 700));
     await humanTypeInBrowser(page, subject.slice(0, 60));
 
-    // Fill body (Froala editor)
-    const bodySelector = '.fr-element[contenteditable="true"]';
-    await smoothScrollToElement(page, bodySelector);
-    await moveMouseAndClick(page, bodySelector);
-    await sleep(randomDelay(300, 700));
-    await humanTypeInBrowser(page, dmText);
-
-    // Pre-submit review pause
-    await sleep(randomDelay(1800, 4500));
-
-    // Click Send
-    const submitSelectors = [
-      'button.button--primary[type="submit"]',
-      'button[type="submit"]',
-      'input[type="submit"]',
+    // ── Locate Froala body editor ────────────────────────────────────────────
+    const EDITOR_SELECTORS = [
+      '.fr-element[contenteditable="true"]',
+      'div[data-placeholder][contenteditable="true"]',
+      'textarea[name="message"]',
+      '#ctrl_message',
     ];
-    let submitted = false;
-    for (const sel of submitSelectors) {
-      const btn = await page.$(sel);
-      if (btn) {
-        await smoothScrollToElement(page, sel);
-        await moveMouseAndClick(page, sel);
-        submitted = true;
-        break;
+    let bodySelector = null;
+    for (const sel of EDITOR_SELECTORS) {
+      const found = await page.$(sel);
+      if (found) { bodySelector = sel; break; }
+    }
+    if (!bodySelector) {
+      // Scroll to bottom and try again
+      await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight }));
+      await sleep(1500);
+      for (const sel of EDITOR_SELECTORS) {
+        const found = await page.$(sel);
+        if (found) { bodySelector = sel; break; }
       }
     }
-    if (!submitted) throw new Error('Could not find submit button');
+    if (!bodySelector) throw new Error('Could not locate message editor');
+
+    // ── Activate Froala editor (mirrors dm.js Step 6) ────────────────────────
+    await page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return;
+      el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      el.focus();
+      ['mouseenter', 'mousedown', 'mouseup', 'click'].forEach(type =>
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }))
+      );
+      el.innerHTML = '<p><br></p>';
+      el.dispatchEvent(new InputEvent('input',  { bubbles: true }));
+      el.dispatchEvent(new InputEvent('change', { bubbles: true }));
+    }, bodySelector);
+    await sleep(randomDelay(500, 900));
+
+    await page.click(bodySelector).catch(() => {});
+    await page.focus(bodySelector);
+    await sleep(randomDelay(300, 500));
+
+    // Clear any pre-filled content
+    await page.keyboard.down('Control');
+    await page.keyboard.press('a');
+    await page.keyboard.up('Control');
+    await page.keyboard.press('Delete');
+    await sleep(randomDelay(200, 400));
+
+    await page.click(bodySelector).catch(() => {});
+    await sleep(randomDelay(200, 400));
+
+    // ── Type body ────────────────────────────────────────────────────────────
+    await humanTypeInBrowser(page, sanitizeBHWMessage(dmText));
+
+    // ── Sync Froala → hidden textarea (CRITICAL — mirrors dm.js Step 7.5) ────
+    const syncResult = await page.evaluate((sel, text) => {
+      const ed = document.querySelector(sel);
+      if (!ed) return 'no_editor';
+      if (!ed.textContent.trim()) {
+        ed.innerHTML = '<p>' + text.replace(/\n/g, '<br>') + '</p>';
+      }
+      const html = ed.innerHTML;
+      const form = ed.closest('form');
+      if (!form) return 'no_form';
+      let synced = 0;
+      form.querySelectorAll('textarea, input[type="hidden"]').forEach(el => {
+        const name = (el.name || el.id || '').toLowerCase();
+        if (name.includes('message') || name.includes('body') || name.includes('content')) {
+          el.value = html;
+          el.dispatchEvent(new Event('input',  { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          synced++;
+        }
+      });
+      form.querySelectorAll('textarea').forEach(ta => {
+        if (getComputedStyle(ta).display === 'none' || ta.hidden) {
+          ta.value = html; synced++;
+        }
+      });
+      return 'synced:' + synced;
+    }, bodySelector, sanitizeBHWMessage(dmText));
+    logger.info(`[THREADS-OWNER-OUTREACH] Editor sync: ${syncResult}`);
+
+    // ── Pre-submit pause ─────────────────────────────────────────────────────
+    await sleep(randomDelay(1800, 4500));
+
+    // ── Submit via DOM dispatch (no bounding box needed) — mirrors dm.js Step 9
+    await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+    await sleep(randomDelay(1000, 1800));
+
+    const submitResult = await page.evaluate((sel) => {
+      const ed = document.querySelector(sel);
+      let form = ed ? ed.closest('form') : null;
+      if (!form) {
+        form = document.querySelector('form[action*="conversation"]') ||
+               document.querySelector('form[action*="add"]') ||
+               document.querySelector('form');
+      }
+      const btn = form
+        ? (form.querySelector('[data-xf-click="submit"]') ||
+           form.querySelector('button[type="submit"]') ||
+           form.querySelector('input[type="submit"]'))
+        : (document.querySelector('button[data-xf-click="submit"]') ||
+           document.querySelector('button.button--primary[type="submit"]'));
+
+      if (btn) {
+        btn.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        const opts = { bubbles: true, cancelable: true, view: window };
+        btn.dispatchEvent(new MouseEvent('mouseenter', opts));
+        btn.dispatchEvent(new MouseEvent('mousemove',  opts));
+        btn.dispatchEvent(new MouseEvent('mousedown',  opts));
+        btn.dispatchEvent(new MouseEvent('mouseup',    opts));
+        btn.dispatchEvent(new MouseEvent('click',      opts));
+        return 'btn_events:' + (btn.textContent.trim().slice(0, 30));
+      }
+      if (form) {
+        try { form.requestSubmit(); return 'form_requestSubmit'; }
+        catch (e) { form.submit(); return 'form_submit'; }
+      }
+      return 'nothing_found';
+    }, bodySelector);
+    logger.info(`[THREADS-OWNER-OUTREACH] Submit: ${submitResult}`);
 
     // Wait for redirect to /conversations/ID/
     await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-    await sleep(randomDelay(1000, 2500));
+    await sleep(randomDelay(3000, 6000));
 
     const finalUrl = page.url();
-    const isConvUrl = finalUrl.includes('/conversations/');
+    const isConvUrl = finalUrl.includes('/conversations/') || finalUrl.includes('/direct-messages/');
     if (!isConvUrl) {
       logger.warn(`[THREADS-OWNER-OUTREACH] DM redirect unexpected: ${finalUrl}`);
     }
@@ -295,11 +438,21 @@ async function processOutreachTarget(target, dryRun = false) {
     posterUsername: scrapeData.posterUsername,
   });
 
-  const posterUsername = target.poster_username || scrapeData.posterUsername;
+  // Always prefer the freshly scraped username — the CSV value may be a
+  // display name (e.g. "TopRank Solutions") which BHW cannot resolve for DMs.
+  const posterUsername = scrapeData.posterUsername || target.poster_username;
 
   if (!posterUsername) {
     await skipOutreachTarget(target.id, 'no_username');
     logger.warn(`${tag} Could not find poster_username — skipping target #${target.id}`);
+    return false;
+  }
+
+  // BHW usernames cannot contain spaces — a space means it's a display name
+  // and the conversations/add?to= URL will not resolve correctly, causing a hang.
+  if (posterUsername.includes(' ')) {
+    await skipOutreachTarget(target.id, 'username_has_spaces');
+    logger.warn(`${tag} poster_username "${posterUsername}" contains spaces (display name, not a BHW username) — skipping target #${target.id}`);
     return false;
   }
 
@@ -323,6 +476,35 @@ async function processOutreachTarget(target, dryRun = false) {
       `${tag} Skipped ⏭\n@${posterUsername} — already_contacted_main_pipeline`
     ).catch(() => {});
     return false;
+  }
+
+  // ── Step 2.5: DM-ability probe — check before paying for AI ─────────────
+  // Navigate to the start-conversation page and look for the "Oops" error.
+  // This costs one page load (~3s) but saves the full AI generation cost when
+  // the target has DMs disabled or their account is restricted.
+  logger.info(`${tag} Probing DM-ability for @${posterUsername}…`);
+  try {
+    const probeUrl   = `${BHW_BASE}/conversations/add?to=${encodeURIComponent(posterUsername)}`;
+    const probePage  = bhwSession.page;
+    await bhwSession.navigateTo(probeUrl);
+    await sleep(randomDelay(1500, 3000));
+    const probeTitle = await probePage.title().catch(() => '');
+    if (probeTitle.toLowerCase().includes('oops') || probeTitle.toLowerCase().includes('error')) {
+      await skipOutreachTarget(target.id, 'bhw_account_restricted_oops_error');
+      logger.warn(`${tag} @${posterUsername} cannot receive DMs (probe: "${probeTitle}") — skipped before AI call`);
+      await alerts.sendRawAlert(
+        `${tag} DM blocked — skipped before AI ⛔\n` +
+        `@${posterUsername} has DMs disabled or account restricted\n` +
+        `Thread: "${(target.title || target.thread_url).slice(0, 80)}"\n` +
+        `No AI cost incurred.`
+      ).catch(() => {});
+      return false;
+    }
+    logger.info(`${tag} DM-ability probe passed for @${posterUsername} — proceeding to AI generation`);
+  } catch (probeErr) {
+    // If the probe itself errors (network blip etc.) log and continue — the real
+    // send will catch it at step 4, same as before.
+    logger.warn(`${tag} DM-ability probe failed with error (continuing): ${probeErr.message}`);
   }
 
   // ── Step 3: Generate DM + follow-ups (single API call) ─────────────────
@@ -374,10 +556,23 @@ async function processOutreachTarget(target, dryRun = false) {
 
   // ── Step 4: Send DM ──────────────────────────────────────────────────────
   const subject   = `Re: ${title}`.slice(0, 60);
-  const sendResult = await sendOutreachDM(posterUsername, subject, dmText, dryRun);
+
+  // Wrap sendOutreachDM in a 3-minute timeout to prevent infinite hangs
+  const DM_TIMEOUT_MS = 3 * 60 * 1000;
+  const sendResult = await Promise.race([
+    sendOutreachDM(posterUsername, subject, dmText, dryRun),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`DM send timed out after ${DM_TIMEOUT_MS / 1000}s`)), DM_TIMEOUT_MS)
+    ),
+  ]).catch(err => ({ success: false, error: err.message }));
 
   if (!sendResult.success) {
     logger.error(`${tag} DM send failed for @${posterUsername}: ${sendResult.error}`);
+    // If BHW account is restricted/banned from receiving DMs — skip permanently
+    if (sendResult.error && sendResult.error.includes('BHW_ACCOUNT_RESTRICTED')) {
+      await skipOutreachTarget(target.id, 'bhw_account_restricted_oops_error');
+      logger.warn(`${tag} @${posterUsername} cannot receive DMs (account restricted) — skipped permanently`);
+    }
     return false;
   }
 
@@ -401,19 +596,19 @@ async function processOutreachTarget(target, dryRun = false) {
   await markOutreachTargetDMSent(target.id);
   const contactedAt = new Date();
 
-  // ── Step 7: Save pre-generated follow-ups (already in memory from Step 3) ─
-  const followUps = {
-    followUp1: generated.followUp1,
-    followUp2: generated.followUp2,
-    followUp3: generated.followUp3,
-  };
-  await createOutreachFollowUps(
-    target.id,
-    conv.id,
-    followUps,
-    contactedAt,
-    FOLLOW_UP_DAYS
-  );
+  // ── Step 7: Save pre-generated follow-ups — DISABLED, uncomment to re-enable
+  // const followUps = {
+  //   followUp1: generated.followUp1,
+  //   followUp2: generated.followUp2,
+  //   followUp3: generated.followUp3,
+  // };
+  // await createOutreachFollowUps(
+  //   target.id,
+  //   conv.id,
+  //   followUps,
+  //   contactedAt,
+  //   FOLLOW_UP_DAYS
+  // );
 
   // ── Step 8: Log activity ─────────────────────────────────────────────────
   await logActivity({
@@ -428,7 +623,7 @@ async function processOutreachTarget(target, dryRun = false) {
     },
   }).catch(() => {});
 
-  // ── Step 9: WhatsApp alert ───────────────────────────────────────────────
+  // ── Step 9: Discord alert ────────────────────────────────────────────────
   const progress = await getOutreachProgress().catch(() => null);
   const progressLine = progress
     ? `Progress: ${progress.dm_sent + progress.replied} / ${progress.total} done — ${progress.pending} remaining`
@@ -448,78 +643,21 @@ async function processOutreachTarget(target, dryRun = false) {
       progressLine
     ).catch(() => {});
   } else {
+    // Live mode — full preview so you can review every DM that actually went out
     await alerts.sendRawAlert(
       `${tag} DM sent ✅\n` +
       `To: @${posterUsername}\n` +
-      `Thread: "${title.slice(0, 80)}"\n` +
-      `Follow-ups: Day ${FOLLOW_UP_DAYS[0]} / Day ${FOLLOW_UP_DAYS[1]} / Day ${FOLLOW_UP_DAYS[2]} scheduled\n` +
+      `Thread: "${title.slice(0, 80)}"\n\n` +
+      `**Initial DM:**\n${dmText}\n\n` +
+      `**Follow-up #1 (Day ${FOLLOW_UP_DAYS[0]}):**\n${generated.followUp1}\n\n` +
+      `**Follow-up #2 (Day ${FOLLOW_UP_DAYS[1]}):**\n${generated.followUp2}\n\n` +
+      `**Follow-up #3 (Day ${FOLLOW_UP_DAYS[2]}):**\n${generated.followUp3}\n\n` +
       progressLine
     ).catch(() => {});
   }
 
   logger.info(`${tag} ✅ Done — @${posterUsername} | DM sent | 3 follow-ups scheduled`);
   return true;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WINDOW TIMING HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Returns milliseconds until the next active window opens.
- * Active window: ACTIVE_START_UTC → ACTIVE_END_UTC (wraps midnight).
- * Adds random jitter of ±WINDOW_JITTER_MIN minutes.
- */
-function msUntilNextActiveWindow() {
-  const now      = new Date();
-  const nowUtcH  = now.getUTCHours() + now.getUTCMinutes() / 60;
-  const jitterMs = (Math.random() * 2 - 1) * WINDOW_JITTER_MIN * 60 * 1000; // ±jitter
-
-  // Active window: 15:00 → 07:00 UTC (crosses midnight)
-  // We're "inside" the window if hour >= START or hour < END
-  const inWindow = (nowUtcH >= ACTIVE_START_UTC) || (nowUtcH < ACTIVE_END_UTC);
-
-  if (inWindow) return Math.max(0, jitterMs); // start now (+ jitter)
-
-  // We're in the sleep window. Calculate time until ACTIVE_START_UTC today or tomorrow.
-  const nextStart = new Date(now);
-  nextStart.setUTCHours(ACTIVE_START_UTC, 0, 0, 0);
-  if (nextStart <= now) nextStart.setUTCDate(nextStart.getUTCDate() + 1);
-
-  return (nextStart - now) + jitterMs;
-}
-
-/**
- * Returns milliseconds until the active window CLOSES.
- * (i.e. until ACTIVE_END_UTC tomorrow UTC)
- */
-function msUntilWindowClose() {
-  const now     = new Date();
-  const nextEnd = new Date(now);
-  nextEnd.setUTCHours(ACTIVE_END_UTC, 0, 0, 0);
-  if (nextEnd <= now) nextEnd.setUTCDate(nextEnd.getUTCDate() + 1);
-  return nextEnd - now;
-}
-
-/**
- * Scatter N send-times randomly across the active window.
- * Constraints: min gap = MIN_GAP_MS, max gap = MAX_GAP_MS.
- * Returns array of Date objects sorted ascending.
- */
-function scatterSendTimes(count, windowMs) {
-  const times = [];
-  let cursor  = 0;
-
-  for (let i = 0; i < count; i++) {
-    const remaining = windowMs - cursor - (count - i - 1) * MIN_GAP_MS;
-    const maxStep   = Math.min(MAX_GAP_MS, remaining);
-    const step      = MIN_GAP_MS + Math.floor(Math.random() * Math.max(0, maxStep - MIN_GAP_MS));
-    cursor += step;
-    times.push(cursor);
-  }
-
-  const now = Date.now();
-  return times.map(ms => new Date(now + ms));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -537,28 +675,42 @@ export async function startThreadsOwnerOutreach(opts = {}) {
 
   logger.info(`${tag} Starting… [${dryRun ? '🔍 DRY RUN — no BHW DMs will be sent' : '🔴 LIVE'}]`);
 
-  // Show progress summary at startup
+  // Show progress summary + resume state at startup
   try {
     const p = await getOutreachProgress();
     const done = p.dm_sent + p.replied;
+
+    // Next upcoming pending follow-up (not yet due — for resume context)
+    const nextFuRow = await dbQuery(`
+      SELECT ofu.scheduled_for, ofu.follow_up_number, ot.poster_username
+      FROM   outreach_follow_ups ofu
+      JOIN   outreach_targets ot ON ot.id = ofu.target_id
+      WHERE  ofu.status = 'pending'
+      ORDER  BY ofu.scheduled_for ASC
+      LIMIT  1
+    `);
+    const nextFu = nextFuRow.rows[0];
+    const nextFuLine = nextFu
+      ? `Next follow-up: FU#${nextFu.follow_up_number} for @${nextFu.poster_username} at ${new Date(nextFu.scheduled_for).toISOString().replace('T', ' ').slice(0, 16)} UTC`
+      : `Next follow-up: none pending`;
+
     logger.info(`${tag} Progress: ${done}/${p.total} targets done | ${p.pending} pending | ${p.skipped} skipped`);
+    logger.info(`${tag} ${nextFuLine}`);
+
     await alerts.sendRawAlert(
       `${tag} Started [${dryRun ? 'DRY RUN' : '🔴 LIVE'}]\n` +
       `Progress: ${done}/${p.total} done | ${p.pending} pending | ${p.skipped} skipped\n` +
-      `Daily cap: ${DAILY_CAP}/day | Window: ${ACTIVE_START_UTC}:00–${ACTIVE_END_UTC}:00 UTC`
+      `${nextFuLine}\n` +
+      `Daily cap: ${DAILY_CAP}/day | Mode: 24h random spread`
     ).catch(() => {});
   } catch (e) { logger.warn(`${tag} Could not load progress: ${e.message}`); }
 
-  const cycle = async () => {
-    // ── Wait for active window ──────────────────────────────────────────────
-    const waitMs  = TEST_MODE ? 0 : msUntilNextActiveWindow();
-    const waitMin = Math.round(waitMs / 60000);
-    if (TEST_MODE) {
-      logger.info(`${tag} TEST_MODE — skipping active window wait, running immediately`);
-    } else {
-      logger.info(`${tag} Next active window in ~${waitMin} min`);
+  const cycle = async (firstRun = false) => {
+    if (firstRun) {
+      logger.info(`${tag} First run — starting full batch of ${DAILY_CAP} DMs now…`);
+    } else if (TEST_MODE) {
+      logger.info(`${tag} TEST_MODE — running immediately`);
     }
-    await sleep(waitMs);
 
     if (botState.isPaused()) {
       logger.info(`${tag} Bot paused — skipping cycle`);
@@ -566,84 +718,72 @@ export async function startThreadsOwnerOutreach(opts = {}) {
       return;
     }
 
-    // ── Pick up to DAILY_CAP targets ────────────────────────────────────────
+    // ── Progress summary ────────────────────────────────────────────────────
     const progress = await getOutreachProgress().catch(() => null);
     if (progress) {
       const done = progress.dm_sent + progress.replied;
       logger.info(`${tag} Progress: ${done}/${progress.total} done | ${progress.pending} pending | ${progress.skipped} skipped`);
     }
 
-    const targets = await getPendingOutreachTargets(DAILY_CAP);
-    if (targets.length === 0) {
-      logger.info(`${tag} No pending targets — sleeping 6 hours`);
-      setTimeout(cycle, 6 * 60 * 60 * 1000);
-      return;
-    }
+    let dmsSentThisCycle = 0;
 
-    logger.info(`${tag} ${targets.length}/${DAILY_CAP} target(s) picked for today's batch (${progress?.pending ?? '?'} total remaining)`);
-
-    // ── Scatter send-times across the active window ─────────────────────────
-    let sendTimes;
-    if (TEST_MODE) {
-      // In test mode: fire all targets immediately (2-second gaps)
-      const now = Date.now();
-      sendTimes = targets.map((_, i) => new Date(now + i * 2000));
-      logger.info(`${tag} TEST_MODE — scatter disabled, firing immediately`);
-    } else {
-      const windowMs = msUntilWindowClose();
-      sendTimes = scatterSendTimes(targets.length, windowMs);
-    }
-
-    logger.info(`${tag} Send schedule for this batch:`);
-    sendTimes.forEach((t, i) => {
-      logger.info(`  ${i + 1}. ${t.toISOString()} — @${targets[i].poster_username || `target#${targets[i].id}`}`);
-    });
-
-    // ── Fire each DM at its scheduled time ──────────────────────────────────
-    for (let i = 0; i < targets.length; i++) {
-      const target    = targets[i];
-      const sendAt    = sendTimes[i];
-      const nowMs     = Date.now();
-      const delayMs   = Math.max(0, sendAt - nowMs);
-      const delayMin  = Math.round(delayMs / 60000);
-
-      logger.info(`${tag} Sleeping ~${delayMin} min until DM #${i + 1}…`);
-      await sleep(delayMs);
-
+    for (let i = 0; i < DAILY_CAP; i++) {
       if (botState.isPaused()) {
-        logger.info(`${tag} Bot paused mid-batch — stopping for today`);
+        logger.info(`${tag} Bot paused — stopping cycle`);
         break;
       }
 
+      // ── Pick exactly 1 fresh target from DB ───────────────────────────────
+      const [target] = await getPendingOutreachTargets(1);
+      if (!target) {
+        logger.info(`${tag} No more pending targets${i === 0 ? ' — sleeping 6 hours' : ` after ${i} DM(s)`}`);
+        break;
+      }
+
+      logger.info(`${tag} DM ${i + 1}/${DAILY_CAP}: @${target.poster_username || `target#${target.id}`}`);
+
       try {
         await processOutreachTarget(target, dryRun);
+        dmsSentThisCycle++;
       } catch (err) {
         logger.error(`${tag} Error on target #${target.id}: ${err.message}`);
       }
 
-      // ── After every DM: check inbox → send 1 follow-up ──────────────────
-      logger.info(`${tag} DM #${i + 1} done — checking inbox…`);
+      // ── After every DM: check inbox → (follow-ups disabled)
+      logger.info(`${tag} DM ${i + 1} done — checking inbox…`);
       try { await checkOutreachInbox({ dryRun });              } catch (e) { logger.error(`${tag} Inbox error: ${e.message}`); }
-      logger.info(`${tag} Sending 1 pending follow-up (if due)…`);
-      try { await runOutreachFollowUps({ dryRun, limit: 1 }); } catch (e) { logger.error(`${tag} Follow-up error: ${e.message}`); }
+      // try { await runOutreachFollowUps({ dryRun, limit: 1 }); } catch (e) { logger.error(`${tag} Follow-up error: ${e.message}`); }
+
+      // ── Inter-DM gap: random 90–240 min (skip on last DM and in TEST_MODE) ──
+      if (!TEST_MODE && i < DAILY_CAP - 1) {
+        const gapMs  = randomDelay(MIN_GAP_MS, MAX_GAP_MS);
+        const gapMin = Math.round(gapMs / 60000);
+        logger.info(`${tag} Sleeping ~${gapMin} min before next DM…`);
+        await sleep(gapMs);
+      }
     }
 
-    // ── Final safety sweep: catch any remaining due follow-ups ──────────────
-    // (handles edge case where more follow-ups are due than DMs sent today)
-    logger.info(`${tag} Batch complete — final follow-up sweep…`);
-    try { await runOutreachFollowUps({ dryRun }); } catch (e) { logger.error(`${tag} Final follow-up sweep error: ${e.message}`); }
+    if (dmsSentThisCycle === 0) {
+      // No targets left at all — long sleep before checking again
+      setTimeout(() => cycle(false), 6 * 60 * 60 * 1000);
+      return;
+    }
 
-    // ── Schedule next cycle ─────────────────────────────────────────────────
-    const nextWaitMs  = msUntilNextActiveWindow();
+    // ── Final safety sweep: follow-ups disabled
+    // try { await runOutreachFollowUps({ dryRun }); } catch (e) { logger.error(`${tag} Final follow-up sweep error: ${e.message}`); }
+
+    // ── Schedule next cycle: always ~24 hours from now ──────────────────────
+    // Add small random jitter (±30 min) so the daily time drifts naturally
+    const jitterMs   = (Math.random() * 2 - 1) * 30 * 60 * 1000; // ±30 min
+    const nextWaitMs = 24 * 60 * 60 * 1000 + jitterMs;
     const nextWaitHrs = Math.round(nextWaitMs / 1000 / 60 / 60 * 10) / 10;
     logger.info(`${tag} Next cycle in ~${nextWaitHrs}h`);
-    setTimeout(cycle, nextWaitMs);
+    setTimeout(() => cycle(false), nextWaitMs);
   };
 
-  // Kick off immediately — cycle() handles its own window-wait
-  cycle().catch(err => {
+  // Kick off immediately — first DM fires right away, rest follow normal schedule
+  cycle(true).catch(err => {
     logger.error(`${tag} Unhandled cycle error: ${err.message}`);
     // Retry after 1h on unexpected crash
-    setTimeout(() => startThreadsOwnerOutreach(opts), 60 * 60 * 1000);
-  });
+    setTimeout(() => startThreadsOwnerOutreach(opts), 60 * 60 * 1000);  });
 }
