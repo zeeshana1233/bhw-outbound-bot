@@ -538,8 +538,9 @@ export async function sendDM(lead, dmText, opts = {}) {
     await markLeadDMSent(lead.id);
     logger.info(`           Database updated — lead #${lead.id} marked dm_sent.`);
 
-    logger.info('           Scheduling follow-up sequence...');
-    await scheduleFollowUps(lead, dbConversationId, dmText);
+    // Follow-up generation disabled — uncomment to re-enable
+    // logger.info('           Scheduling follow-up sequence...');
+    // await scheduleFollowUps(lead, dbConversationId, dmText);
 
   } catch (dbErr) {
     logger.error('CRITICAL — Failed to update database after sending DM:', dbErr.message);
@@ -552,7 +553,7 @@ export async function sendDM(lead, dmText, opts = {}) {
   logger.info(`   Recipient     : @${lead.poster_username}`);
   logger.info(`   Conversation  : ${conversationUrl || currentUrl}`);
   logger.info(`   DB conv ID    : ${dbConversationId}`);
-    logger.info(`   Follow-ups    : scheduled at day 2, 3, 5, 7, 12, 21`);
+    // logger.info(`   Follow-ups    : scheduled at day 2, 3, 5, 7, 12, 21`);
   logger.info('═══════════════════════════════════════════════════════════\n');
 
   return {
@@ -589,7 +590,7 @@ export async function generateAndSendDM(lead, opts = {}) {
       alerts.sendHotLeadAlert(lead, dmText).catch(err =>
         logger.error('[DM] Hot lead alert failed:', err.message)
       );
-      logger.info(`[DM] Hot lead score ${hotScore}/10 — WhatsApp alert sent.`);
+      logger.info(`[DM] Hot lead score ${hotScore}/10 — Discord alert sent.`);
     }
 
     // Urgency call reminder — ask AI to judge title + description
