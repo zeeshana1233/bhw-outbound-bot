@@ -31,10 +31,17 @@ export const config = {
     baseUrl: 'https://www.blackhatworld.com/forums/hire-a-freelancer.76/',
   },
   
-  telegram: {
-    botToken: process.env.TELEGRAM_BOT_TOKEN,
-    groupId:  process.env.TELEGRAM_GROUP_ID || '-5054203181',
+  discord: {
+    botToken:          process.env.DISCORD_BOT_TOKEN,
+    channelId:         process.env.DISCORD_CHANNEL_ID          || '',
+    guildId:           process.env.DISCORD_GUILD_ID             || '',
+    pipelineCChannelId: process.env.PIPELINE_C_CHANNEL_ID      || '',
   },
+
+  // Pipeline C only — anonymous job notifier. When true: scrape + Discord job
+  // cards only. No comment/DM outreach, no Threads Owner Outreach, no login.
+  // Default true so A/B cannot re-enable by accident.
+  pipelineCOnly: process.env.PIPELINE_C_ONLY !== 'false',
 
   bot: {
     minDelay: parseInt(process.env.MIN_DELAY_MS) || 2000,

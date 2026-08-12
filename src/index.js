@@ -14,7 +14,7 @@ import alerts from './services/alerts.js';
 import bhwSession from './utils/bhwSession.js';
 import { botState } from './utils/botState.js';
 import { startCommandCenter } from './services/commandCenter.js';
-import { initTelegram } from './services/telegramClient.js';
+import { initDiscord } from './services/discordClient.js';
 import { startThreadsOwnerOutreach } from './engines/threads-owner-outreach.js';
 
 dotenv.config();
@@ -172,16 +172,16 @@ async function processQualifiedLeads() {
  * Zero lag between "lead discovered" and "comment+DM sent".
  */
 async function startScraperAndOutreachLoop() {
-  logger.info('🔄  Scraper + outreach loop starting…');
+  logger.info(`🔄  Scraper loop starting…${config.pipelineCOnly ? ' [Pipeline C only — anonymous, no outreach]' : ''}`);
 
   let runCount = 0;
+  let cfFailStreak = 0; // consecutive CF blocks — drives exponential backoff
 
   const tick = async () => {
     // ── Randomised interval (re-rolled every tick so the pattern is never fixed) ─
-    const minMs      = config.bhw.scrapeIntervalMin || 10 * 60 * 1000;
-    const maxMs      = config.bhw.scrapeIntervalMax || 20 * 60 * 1000;
-    const intervalMs = Math.floor(minMs + Math.random() * (maxMs - minMs));
-    const nextMinStr = Math.round(intervalMs / 60000);
+    const minMs    = config.bhw.scrapeIntervalMin || 10 * 60 * 1000;
+    const maxMs    = config.bhw.scrapeIntervalMax || 20 * 60 * 1000;
+    let intervalMs = Math.floor(minMs + Math.random() * (maxMs - minMs));
 
     if (botState.isPaused()) {
       logger.info('⏸️  Bot paused — skipping scrape cycle');
@@ -201,11 +201,12 @@ async function startScraperAndOutreachLoop() {
     let scrapeResult = null;
     let newLeads     = [];
     try {
-      logger.info('\n📡  Scraping BHW — checking top 5 posts on page 1…');
+      logger.info(`\n📡  Scraping BHW — checking top posts on page 1…${config.pipelineCOnly ? ' [Pipeline C only]' : ''}`);
       scrapeResult = await scraper.scrapeAndStore(1);
-      newLeads     = scrapeResult.threads;
+      newLeads     = scrapeResult.threads || [];
     } catch (err) {
       logger.error(`Scraper error: ${err.message}`);
+      const nextMinStr = Math.round(intervalMs / 60000);
       await alerts.sendRawAlert([
         `❌ *SCRAPER ERROR* | Run #${runCount} | ${runTs}`,
         '',
@@ -215,56 +216,65 @@ async function startScraperAndOutreachLoop() {
       ].join('\n')).catch(() => {});
     }
 
-    // ── WhatsApp status ping — only fires when new jobs are found ───────
+    // ── CF exponential backoff ───────────────────────────────────────
+    // Hammering a blocked datacenter IP every 10–20 min makes CF worse.
     if (scrapeResult?.cloudflareBlocked) {
+      cfFailStreak += 1;
+      const base = Math.max(minMs, 30 * 60 * 1000); // at least 30 min
+      const backedOff = Math.min(2 * 60 * 60 * 1000, base * Math.pow(2, cfFailStreak - 1));
+      const jitter = Math.floor(backedOff * 0.15 * Math.random());
+      intervalMs = backedOff + jitter;
+      const nextMinStr = Math.round(intervalMs / 60000);
+
       await alerts.sendRawAlert([
         `⚠️ *CLOUDFLARE BLOCK* | Run #${runCount} | ${runTs}`,
         '',
         'BHW returned a Cloudflare challenge — posts could not be loaded.',
         '',
-        `⏭ Auto-retrying in ~${nextMinStr} min`,
-        '⚠️ If this repeats, the server IP may be rate-limited by BHW.',
+        `⏭ Backing off ~${nextMinStr} min (streak: ${cfFailStreak})`,
+        '⚠️ Anonymous scraper only — no login. If this keeps repeating, the server IP may be rate-limited.',
       ].join('\n')).catch(() => {});
 
-    } else if (scrapeResult && scrapeResult.newProcessed > 0) {
-      // Only ping when there are actually new posts worth reporting
-      const statusIcon = (s) => {
-        if (s === 'seen')            return '🔄';
-        if (s === 'new-approved')    return '✅';
-        if (s === 'new-rejected')    return '❌';
-        if (s === 'skipped-ancient') return '⏳';
-        if (s === 'skipped-pinned')  return '📌';
-        return '❓';
-      };
+    } else if (scrapeResult) {
+      cfFailStreak = 0;
 
-      const postLines = (scrapeResult.inspectedPosts || []).map((p, i) => {
-        const icon  = statusIcon(p.status);
-        const label = p.status === 'seen'            ? 'Already tracked'
-                    : p.status === 'new-approved'    ? `AI APPROVED (${Math.round((p.confidence || 0) * 100)}%)`
-                    : p.status === 'new-rejected'    ? `AI rejected (${Math.round((p.confidence || 0) * 100)}%)`
-                    : p.status === 'skipped-ancient' ? 'Skipped — too old'
-                    : p.status === 'skipped-pinned'  ? 'Skipped — pinned'
-                    : 'Pending';
-        return `${icon} ${i + 1}. "${p.title?.substring(0, 50)}" — ${label}`;
-      });
+      // Main-channel summary only when NOT in Pipeline C only (C posts to its own channel)
+      if (!config.pipelineCOnly && scrapeResult.newProcessed > 0) {
+        const statusIcon = (s) => {
+          if (s === 'seen')            return '🔄';
+          if (s === 'new-approved')    return '✅';
+          if (s === 'new-rejected')    return '❌';
+          if (s === 'skipped-ancient') return '⏳';
+          if (s === 'skipped-pinned')  return '📌';
+          return '❓';
+        };
 
-      await alerts.sendRawAlert([
-        `🆕 *New Job Found! Run #${runCount}* | ${runTs}`,
-        '',
-        `📊 Page: ${scrapeResult.totalFound} posts  |  Checked: top 5`,
-        '',
-        '*Top 5 posts:*',
-        ...postLines,
-        '',
-        `✅ AI approved: ${scrapeResult.approved}  |  ❌ Rejected: ${scrapeResult.rejected}`,
-        '',
-        `⏭ Starting outreach now…`,
-      ].join('\n')).catch(() => {});
+        const postLines = (scrapeResult.inspectedPosts || []).map((p, i) => {
+          const icon  = statusIcon(p.status);
+          const label = p.status === 'seen'            ? 'Already tracked'
+                      : p.status === 'new-approved'    ? `AI APPROVED (${Math.round((p.confidence || 0) * 100)}%)`
+                      : p.status === 'new-rejected'    ? `AI rejected (${Math.round((p.confidence || 0) * 100)}%)`
+                      : p.status === 'skipped-ancient' ? 'Skipped — too old'
+                      : p.status === 'skipped-pinned'  ? 'Skipped — pinned'
+                      : 'Pending';
+          return `${icon} ${i + 1}. "${p.title?.substring(0, 50)}" — ${label}`;
+        });
+
+        await alerts.sendRawAlert([
+          `🆕 *New Job Found! Run #${runCount}* | ${runTs}`,
+          '',
+          `📊 Page: ${scrapeResult.totalFound} posts`,
+          '',
+          '*Top posts:*',
+          ...postLines,
+          '',
+          `✅ AI approved: ${scrapeResult.approved}  |  ❌ Rejected: ${scrapeResult.rejected}`,
+        ].join('\n')).catch(() => {});
+      }
     }
-    // If nothing new — stay silent (no noise on every cycle)
 
-    // ── Outreach — always live ────────────────────────────────────────
-    if (scrapeResult && !scrapeResult.cloudflareBlocked) {
+    // ── Pipeline A outreach — disabled in Pipeline C only mode ────────
+    if (!config.pipelineCOnly && scrapeResult && !scrapeResult.cloudflareBlocked) {
       const newQualified = newLeads.filter(t => t.qualified);
       if (newQualified.length > 0) {
         logger.info(`\n  📬  ${newQualified.length} newly qualified — starting outreach immediately`);
@@ -275,7 +285,8 @@ async function startScraperAndOutreachLoop() {
     }
 
     // ── Schedule next tick ────────────────────────────────────────────
-    logger.info(`\n  ⏰  Next scrape in ${nextMinStr} min (randomised ${Math.round(minMs/60000)}–${Math.round(maxMs/60000)} min window)`);
+    const nextMinStr = Math.round(intervalMs / 60000);
+    logger.info(`\n  ⏰  Next scrape in ${nextMinStr} min${cfFailStreak ? ` (CF backoff streak ${cfFailStreak})` : ` (randomised ${Math.round(minMs / 60000)}–${Math.round(maxMs / 60000)} min window)`}`);
     setTimeout(tick, intervalMs);
   };
 
@@ -285,7 +296,7 @@ async function startScraperAndOutreachLoop() {
 
 // ── Daily Report ─────────────────────────────────────────────────────────────
 /**
- * Fires a WhatsApp daily report at 9:00 AM every day.
+ * Fires a Discord daily report at 9:00 AM every day.
  * Collects real stats from the DB for the previous period.
  */
 function scheduleDailyReport() {
@@ -318,7 +329,7 @@ function scheduleDailyReport() {
 
 // ── Heartbeat ────────────────────────────────────────────────────────────────
 /**
- * Sends a WA alive-ping every 6 hours so you can confirm the bot
+ * Sends a Discord alive-ping every 6 hours so you can confirm the bot
  * is still running during the 24h test without checking logs manually.
  */
 function startHeartbeat() {
@@ -347,7 +358,7 @@ function startHeartbeat() {
   };
 
   setTimeout(ping, INTERVAL_MS); // first ping after 6h
-    logger.info('💓  Heartbeat started — Telegram ping every 6 hours');
+    logger.info('💓  Heartbeat started — Discord ping every 6 hours');
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -361,25 +372,23 @@ async function main() {
     await initDatabase();
     logger.info('✅  Database connected\n');
 
-    // ACTIVE: Scraper + comment + DM + daily report
-    // Follow-up/inbox/community disabled until first conversion confirmed
+    // Follow-up/inbox/community stay off
     // startInboxMonitor({ dryRun: DRY_RUN });
     // startFollowUpSystem({ dryRun: DRY_RUN });
     // startCommunityCommenter({ dryRun: DRY_RUN });
     // bhwSession.startHealthCheck();
-    await initTelegram();
+    await initDiscord();
     startCommandCenter();
-    scheduleDailyReport();    // 9 AM WA daily summary
+    scheduleDailyReport();    // 9 AM daily summary
     startHeartbeat();         // 6-hour alive ping
 
-    // Scraper + immediate outreach — one unified loop
+    // Anonymous scraper + Pipeline C job notifier (no login)
     startScraperAndOutreachLoop();
 
-    // ── Threads Owner Outreach Module ─────────────────────────────────────
-    // Independent module: DMs BHW thread owners from a pre-seeded list.
-    // Runs its own 16h active window (15:00–07:00 UTC), 5 DMs/day.
-    // Controlled by OUTREACH_ENABLED=true in .env
-    if (config.outreach.enabled) {
+    // ── Threads Owner Outreach — forced off in Pipeline C only mode ───────
+    if (config.pipelineCOnly) {
+      logger.info('   • Threads Owner Outreach: disabled (PIPELINE_C_ONLY=true)');
+    } else if (config.outreach.enabled) {
       const dryRun = process.env.DRY_RUN === 'true';
       startThreadsOwnerOutreach({ dryRun });
       logger.info(`   • Threads Owner Outreach: enabled (${config.outreach.dailyCap}/day | ${dryRun ? 'DRY RUN — no BHW DMs sent' : '🔴 LIVE'})`);
@@ -387,12 +396,16 @@ async function main() {
       logger.info('   • Threads Owner Outreach: disabled (set OUTREACH_ENABLED=true to enable)');
     }
 
-    logger.info('\n✅  Bot running — 24h test mode');
-    logger.info('   • Scrape BHW every 10–20 min (anonymous, no session)');
-    logger.info('   • Comment posted immediately on new approved posts');
-    logger.info('   • DM sent ~2-4 min after comment (human gap)');
-    logger.info('   • No duplicate comment/DM — triple-guarded at DB + loop + engine level');
-    logger.info('   • Telegram: new job alert + outreach report + 9 AM daily summary + 6h heartbeat\n');
+    if (config.pipelineCOnly) {
+      logger.info('\n✅  Bot running — Pipeline C only (anonymous job notifier)');
+      logger.info('   • Scraper: anonymous (no login / no bhwSession)');
+      logger.info('   • Pipeline A comment/DM: OFF');
+      logger.info('   • Pipeline B outreach: OFF');
+      logger.info('   • Discord: Pipeline C job cards + CF alerts + 9 AM report + 6h heartbeat\n');
+    } else {
+      logger.info('\n✅  Bot running — full scrape + outreach mode');
+      logger.info('   • Discord: alerts + 9 AM daily summary + 6h heartbeat\n');
+    }
 
   } catch (error) {
     logger.error('❌  Fatal error starting bot:', error);

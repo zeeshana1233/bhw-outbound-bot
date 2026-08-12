@@ -25,6 +25,28 @@ import {
 } from '../utils/helpers.js';
 import aiEngine from '../services/aiEngine.js';
 import { logActivity } from '../database/queries.js';
+import { sendPipelineCJobAlert } from '../services/alerts.js';
+
+// ── Persistent anonymous browser (shared across scrape cycles) ─────────────
+// Reusing one browser avoids a fresh Cloudflare Turnstile on every tick.
+// Still anonymous — no login cookies, no bhwSession / app_pilot.
+let _sharedBrowser = null;
+let _sharedPage = null;
+
+async function isCloudflareChallenge(page) {
+  try {
+    const title = await page.title().catch(() => '');
+    if (/just a moment|cloudflare|attention required/i.test(title || '')) return true;
+    const flagged = await page.evaluate(() => {
+      const body = (document.body?.innerText || '').slice(0, 2000);
+      return /checking your browser|just a moment|cf-browser-verification|turnstile|enable javascript and cookies/i.test(body)
+        || !!document.querySelector('#challenge-running, #challenge-stage, .cf-browser-verification, iframe[src*="challenges.cloudflare.com"]');
+    }).catch(() => false);
+    return !!flagged;
+  } catch {
+    return false;
+  }
+}
 
 class BHWScraper {
   constructor() {
@@ -40,19 +62,35 @@ class BHWScraper {
    * Initialize browser for scraping using puppeteer-real-browser
    * This bypasses CloudFlare protection
    */
-  async initBrowser() {
-    if (this.browser) {
-      return; // Already initialized
+  async initBrowser({ forceFresh = false } = {}) {
+    if (!forceFresh && _sharedBrowser && _sharedPage) {
+      this.browser = _sharedBrowser;
+      this.page = _sharedPage;
+      logger.info('Reusing persistent anonymous scraper browser (no login).');
+      return;
     }
 
-    logger.info('Initializing real browser for scraping...');
+    if (forceFresh) {
+      await this.closeBrowser({ discardShared: true });
+    }
+
+    if (this.browser) {
+      return; // Already initialized on this instance
+    }
+
+    logger.info('Initializing real browser for scraping (anonymous — no login)...');
     
     // Connect with puppeteer-real-browser for CloudFlare bypass
-    // Wrap in a timeout — on Windows, connect() can hang indefinitely if
-    // Chromium fails to launch (no error thrown, promise never resolves).
+    // Wrap in a timeout in case connect() hangs (no error thrown, promise never resolves).
     const CONNECT_TIMEOUT_MS = 90_000; // 90 seconds
+    // headless: false — Cloudflare fingerprints headless:true and blocks it.
+    // Running with headless:false on Linux uses the Xvfb virtual display (:99)
+    // managed by puppeteer-real-browser itself (disableXvfb: false).
+    // This scraper browser is ALWAYS a fresh anonymous session — no cookies,
+    // no login. It never touches the bhwSession singleton (app_pilot profile).
+    // BHW forum listing is fully public — no authentication needed to read it.
     const connectPromise = connect({
-      headless: 'auto',
+      headless: false,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -67,7 +105,7 @@ class BHWScraper {
       turnstile: true,
       customConfig: {},
       connectOption: {},
-      disableXvfb: true,   // must be true on Windows — Xvfb is Linux-only
+      disableXvfb: false,  // false = let puppeteer-real-browser manage its own Xvfb session on Linux
       ignoreAllFlags: false
     });
     const timeoutPromise = new Promise((_, reject) =>
@@ -77,6 +115,8 @@ class BHWScraper {
 
     this.browser = browser;
     this.page = page;
+    _sharedBrowser = browser;
+    _sharedPage = page;
 
     // Set realistic browser headers and viewport
     await this.page.setViewport({ width: 1366, height: 768 });
@@ -87,15 +127,22 @@ class BHWScraper {
       'DNT': '1',
     });
 
+    try {
+      await this.page.evaluateOnNewDocument(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      });
+    } catch (_) {}
+
     // ── Human warmup: visit BHW homepage before going to the forum ──
     // A real user doesn't jump straight to a deep page — they land on the
-    // homepage first. This builds a legit-looking session cookie from scratch.
-    logger.info('Warming up session — visiting BHW homepage first...');
+    // homepage first. This builds a legit-looking anonymous CF session.
+    logger.info('Warming up anonymous session — visiting BHW homepage first...');
     try {
       await this.page.goto('https://www.blackhatworld.com/', {
         waitUntil: 'domcontentloaded',
         timeout: 60000,
       });
+      await this.waitForCloudflareClear(120000);
       await sleep(randomDelay(3000, 6000));
 
       // Simulate reading the page — scroll down slowly like a human
@@ -112,25 +159,68 @@ class BHWScraper {
         });
       });
 
+      // Light mouse wander — helps Turnstile / bot scoring without any login
+      try {
+        await this.page.mouse.move(120 + Math.random() * 400, 160 + Math.random() * 200, { steps: 8 });
+        await sleep(randomDelay(400, 900));
+        await this.page.mouse.move(300 + Math.random() * 500, 280 + Math.random() * 250, { steps: 10 });
+      } catch (_) {}
+
       await sleep(randomDelay(2000, 4000));
-      logger.info('Warmup complete — session established.');
+      logger.info('Warmup complete — anonymous session established.');
     } catch (e) {
-      logger.warn('Warmup visit failed (non-fatal):', e.message);
+      // Puppeteer sometimes throws non-Error objects (e.g. plain strings or
+      // objects whose .message is undefined). Use `e?.message ?? String(e)`
+      // so the log always shows a readable string instead of a character-by-character
+      // object dump like {"0":"E","1":"x",...}.
+      logger.warn(`Warmup visit failed (non-fatal): ${e?.message ?? String(e)}`);
     }
 
-    logger.info('Real browser initialized successfully (CloudFlare bypass enabled)');
+    logger.info('Real browser initialized successfully (CloudFlare bypass enabled, anonymous)');
   }
 
   /**
-   * Close browser
+   * Wait for Cloudflare / Turnstile challenge to clear (anonymous path).
+   * @returns {Promise<boolean>} true if cleared, false if still blocked
    */
-  async closeBrowser() {
-    if (this.browser) {
-      await this.browser.close();
+  async waitForCloudflareClear(maxWaitMs = 120000) {
+    const started = Date.now();
+    if (!(await isCloudflareChallenge(this.page))) return true;
+
+    logger.info(`CloudFlare challenge detected — waiting up to ${Math.round(maxWaitMs / 1000)}s for Turnstile bypass...`);
+    while (Date.now() - started < maxWaitMs) {
+      await sleep(2000);
+      if (!(await isCloudflareChallenge(this.page))) {
+        logger.info('CloudFlare challenge passed!');
+        await sleep(randomDelay(4000, 7000));
+        return true;
+      }
+    }
+    logger.warn(`CloudFlare challenge still present after ${Math.round(maxWaitMs / 1000)}s.`);
+    return false;
+  }
+
+  /**
+   * Close browser. By default keeps the shared instance for the next cycle.
+   * Pass discardShared:true after a CF block so the next init is fresh.
+   */
+  async closeBrowser({ discardShared = false } = {}) {
+    if (!discardShared) {
+      // Keep persistent anonymous browser alive between scrape cycles
       this.browser = null;
       this.page = null;
-      logger.info('Browser closed');
+      return;
     }
+
+    const browser = this.browser || _sharedBrowser;
+    if (browser) {
+      try { await browser.close(); } catch (_) {}
+      logger.info('Anonymous scraper browser closed (discarded after CF block or shutdown)');
+    }
+    this.browser = null;
+    this.page = null;
+    _sharedBrowser = null;
+    _sharedPage = null;
   }
 
   /**
@@ -203,25 +293,17 @@ class BHWScraper {
       // Wait a bit for initial load
       await sleep(2000);
 
-      // Check if CloudFlare challenge is present
-      let title = await this.page.title();
+      const title = await this.page.title().catch(() => '');
       logger.debug(`Page title: ${title}`);
 
-      if (title.includes('Just a moment') || title.includes('Cloudflare')) {
-        logger.info('CloudFlare challenge detected, waiting up to 60 seconds...');
-        
-        try {
-          await this.page.waitForFunction(
-            () => !document.title.includes('Just a moment') && !document.title.includes('Cloudflare'),
-            { timeout: 60000 }
-          );
-          
-          logger.info('CloudFlare challenge passed!');
-          await sleep(randomDelay(2000, 4000));
-          
-        } catch (e) {
-          logger.warn('CloudFlare challenge still present after 60s, marking as blocked.');
+      // Give puppeteer-real-browser Turnstile handler more time (up to 120s).
+      // Still anonymous — no login cookies.
+      if (await isCloudflareChallenge(this.page)) {
+        const cleared = await this.waitForCloudflareClear(120000);
+        if (!cleared) {
+          logger.warn('CloudFlare challenge still present after 120s — will retry with fresh browser.');
           this.cloudflareBlocked = true;
+          return null;
         }
       }
 
@@ -324,20 +406,28 @@ class BHWScraper {
     
     logger.info(`Scraping BHW page ${pageNum}...`);
     
+    const emptyResult = {
+      threads: [],
+      inspectedPosts: [],
+      stats: { totalFound: 0, filteredOut: 0, alreadyExisted: 0, newProcessed: 0, approved: 0, rejected: 0 },
+    };
+
     const html = await this.fetchPageWithRetries(url);
     
     if (!html) {
       logger.error(`Failed to fetch listing page ${pageNum}`);
-      return [];
+      return emptyResult;
     }
 
     const $ = cheerio.load(html);
     const allCards = $('div.structItem--thread').toArray();
 
-    // ── Only look at the top 10 cards ───────────────────────────────────────
+    // ── Only look at the top 20 cards ───────────────────────────────────────
     // BHW always lists newest posts first. New leads always arrive at the top.
-    // 10 covers enough recent posts without over-scanning on every cycle.
-    const TOP_N    = 10;
+    // 20 gives enough headroom to catch new posts even when bumped/old threads
+    // are floating near position 10. The page typically has ~20 threads total,
+    // so this covers the entire first page without over-scanning.
+    const TOP_N    = 20;
     const threadCards = allCards.slice(0, TOP_N);
 
     // Tracks all 5 inspected posts with per-post status for the WA ping
@@ -520,23 +610,36 @@ class BHWScraper {
 
       logger.info(`Thread stored in database (Lead ID: ${lead.id})`);
 
-      // Qualify with AI (OpenClaw — GPT-4o mini)
-      // NOTE: AI is ONLY called here for genuinely NEW posts.
-      // Already-seen posts are caught by the DB batch check in PASS 2 and never reach here.
-      logger.info('Qualifying thread with OpenClaw (GPT-4o mini)...');
-      const qualification = await aiEngine.qualifyLead(basicData.title, description);
-      
-      logger.info(`Qualification result: ${qualification.qualified ? 'APPROVED' : 'REJECTED'} (Confidence: ${qualification.confidence}, Tier: ${qualification.tier})`);
+      // Pipeline C only: skip AI qualification — notifier does not need it.
+      // Full Pipeline A path still qualifies with GPT-4o mini.
+      let qualification;
+      if (config.pipelineCOnly) {
+        qualification = {
+          qualified: false,
+          confidence: 0,
+          tier: 'pipeline-c-only',
+          reason: 'Skipped — PIPELINE_C_ONLY mode (job notifier, no outreach)',
+        };
+        logger.info('[Pipeline C] Skipping AI qualification (notifier-only mode)');
+      } else {
+        // NOTE: AI is ONLY called here for genuinely NEW posts.
+        // Already-seen posts are caught by the DB batch check in PASS 2 and never reach here.
+        logger.info('Qualifying thread with OpenClaw (GPT-4o mini)...');
+        qualification = await aiEngine.qualifyLead(basicData.title, description);
+        logger.info(`Qualification result: ${qualification.qualified ? 'APPROVED' : 'REJECTED'} (Confidence: ${qualification.confidence}, Tier: ${qualification.tier})`);
+      }
 
       // Track in inspectedPosts
       const ip = inspectedPosts.find(p => p.threadId === threadId);
       if (ip) {
-        ip.status = qualification.qualified ? 'new-approved' : 'new-rejected';
+        ip.status = config.pipelineCOnly
+          ? 'pipeline-c'
+          : (qualification.qualified ? 'new-approved' : 'new-rejected');
         ip.confidence = qualification.confidence;
         ip.age = threadAgeCategory;
       }
 
-      // Update lead with qualification
+      // Update lead with qualification (skipped score in C-only still written for DB consistency)
       await updateLeadQualification(
         lead.id,
         qualification.qualified,
@@ -544,11 +647,28 @@ class BHWScraper {
         qualification.confidence
       );
 
-      // Log qualification
+      // ── Pipeline C: Today-only new job notifier ──────────────────────────
+      // Fires for every brand-new thread posted TODAY regardless of AI result.
+      // Bumped/old threads that BHW floats to the top are silently ignored.
+      if (basicData.postedAt && this.isToday(basicData.postedAt)) {
+        sendPipelineCJobAlert({
+          title:          basicData.title,
+          url:            basicData.fullUrl,
+          posterUsername: posterUsername,
+          description:    description,
+          postedAt:       basicData.postedAt,
+        }).catch(err => logger.warn(`[Pipeline C] Alert failed: ${err.message}`));
+      } else {
+        logger.info(`[Pipeline C] Skipping alert — thread not from today (age: ${threadAgeCategory}, posted: ${basicData.postedAt || 'unknown'})`);
+      }
+
+      // Log qualification / notifier activity
       await logActivity({
-        actionType: 'qualification',
+        actionType: config.pipelineCOnly ? 'pipeline_c_notify' : 'qualification',
         leadId: lead.id,
-        description: `AI qualification: ${qualification.qualified ? 'APPROVED' : 'REJECTED'}`,
+        description: config.pipelineCOnly
+          ? `Pipeline C notifier stored thread: ${basicData.title}`
+          : `AI qualification: ${qualification.qualified ? 'APPROVED' : 'REJECTED'}`,
         metadata: {
           confidence: qualification.confidence,
           tier: qualification.tier,
@@ -607,14 +727,15 @@ class BHWScraper {
   }
 
   /**
-   * Main scraping function
+   * Main scraping function — scrapes `pages` pages of BHW listings.
+   * If CloudFlare blocks mid-run, tears down the browser, sleeps 2–3 min,
+   * then retries once with a completely fresh browser instance.
    * @param {number} pages - Number of pages to scrape
    */
   async scrapeAndStore(pages = 1) {
     logger.info(`Starting BHW scraper for ${pages} page(s)...`);
     
     try {
-      // Initialize browser
       await this.initBrowser();
       
       const allThreads = [];
@@ -625,12 +746,43 @@ class BHWScraper {
 
       for (let p = 1; p <= pages; p++) {
         const { threads, inspectedPosts, stats: pageStats } = await this.scrapeListingWithDetails(p);
+
+        // ── CF block recovery ────────────────────────────────────────────────
+        // If CF blocked the listing page, discard the shared browser, wait
+        // 2–3 minutes, then retry ONCE with a brand-new anonymous browser.
+        // Still no login. If it blocks again, skip cycle (outer loop backs off).
+        if (this.cloudflareBlocked) {
+          logger.warn('CF block detected during listing scrape — discarding browser and waiting before retry...');
+          await this.closeBrowser({ discardShared: true });
+          const cooldown = randomDelay(120000, 180000); // 2–3 min
+          logger.info(`Waiting ${Math.round(cooldown / 1000)}s for CF cooldown before fresh-browser retry...`);
+          await sleep(cooldown);
+
+          logger.info('Retrying with fresh anonymous browser...');
+          this.cloudflareBlocked = false; // reset flag for the retry
+          await this.initBrowser({ forceFresh: true });
+
+          const retryResult = await this.scrapeListingWithDetails(p);
+          if (this.cloudflareBlocked) {
+            logger.warn('CF still blocking after fresh-browser retry — skipping this cycle entirely.');
+            await this.closeBrowser({ discardShared: true });
+            break; // give up for this cycle; outer loop applies exponential backoff
+          }
+          allThreads.push(...(retryResult.threads || []));
+          allInspectedPosts.push(...(retryResult.inspectedPosts || []));
+          totalFound          += retryResult.stats?.totalFound || 0;
+          totalAlreadyExisted += retryResult.stats?.alreadyExisted || 0;
+          totalNewProcessed   += retryResult.stats?.newProcessed || 0;
+          continue;
+        }
+        // ────────────────────────────────────────────────────────────────────
+
         logger.info(`Completed page ${p}: ${threads.length} new threads processed`);
         allThreads.push(...threads);
         allInspectedPosts.push(...inspectedPosts);
-        totalFound        += pageStats.totalFound;
+        totalFound          += pageStats.totalFound;
         totalAlreadyExisted += pageStats.alreadyExisted;
-        totalNewProcessed += pageStats.newProcessed;
+        totalNewProcessed   += pageStats.newProcessed;
 
         if (p < pages) {
           const delay = randomDelay(2000, 5000);
@@ -661,7 +813,8 @@ class BHWScraper {
         rejected,
       };
     } finally {
-      await this.closeBrowser();
+      // Keep anonymous browser alive for the next cycle (unless discarded after CF)
+      await this.closeBrowser({ discardShared: false });
     }
   }
 }
