@@ -1,17 +1,17 @@
 /**
- * AI Engine — Plain OpenAI API, Zee's Voice
+ * AI Engine — Anthropic Claude API, Zee's Voice
  *
  * Full replacement for the former openclaw service.
  * All 9 generation functions plus the new scoreLeadHotness utility.
  *
  * Architecture decision (per consultant review 2026-02-28):
- *   Plain openai.chat.completions.create() calls — no agent framework.
+ *   Plain anthropic.messages.create() calls — no agent framework.
  *   Shared persona injected via zeePersona.buildSystemPrompt().
  *   Retry logic, centralised JSON fence stripping, and DB logging
  *   all live in callAI() so individual functions stay clean.
  */
 
-import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -19,7 +19,7 @@ import { config } from '../config/config.js';
 import logger from '../utils/logger.js';
 import { buildSystemPrompt, ZEE_SYSTEM_PROMPT } from './zeePersona.js';
 
-const openai = new OpenAI({ apiKey: config.openai.apiKey });
+const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PROMPT LOG UTILITY — saves exact prompts sent to OpenAI for outreach targets
@@ -126,20 +126,20 @@ export async function callAI(systemPrompt, userPrompt, options = {}) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const t0 = Date.now();
     try {
-      const response = await openai.chat.completions.create({
-        model: config.openai.model,
+      const response = await anthropic.messages.create({
+        model: config.anthropic.model,
+        max_tokens,
+        temperature,
+        system: systemPrompt,
         messages: [
-          { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        temperature,
-        max_tokens,
       });
 
-      const raw = response.choices[0].message.content ?? '';
+      const raw = response.content[0]?.text ?? '';
       const latencyMs = Date.now() - t0;
-      const tokensIn = response.usage?.prompt_tokens ?? 0;
-      const tokensOut = response.usage?.completion_tokens ?? 0;
+      const tokensIn  = response.usage?.input_tokens  ?? 0;
+      const tokensOut = response.usage?.output_tokens ?? 0;
 
       // Log to DB (fire-and-forget — import lazily to avoid circular deps)
       _logAICall({ functionName, tokensIn, tokensOut, latencyMs, success: true })
@@ -820,41 +820,47 @@ ${(description || '').substring(0, 1000)}
 
 You must produce FOUR pieces of content in one response. Return ONLY valid JSON with exactly these keys: dm, followUp1, followUp2, followUp3.
 
-── dm ──
-The initial cold DM to send right now.
-- 3–5 sentences, max ~80 words
-- Open with a specific observation from their thread (proves you read it)
-- One sentence about who you are and what you build
-- One clear value prop for what you could do for THEM specifically
-- Soft CTA — invite a reply, no pressure
-- NO pricing, NO generic opener, NO bullet points, NO markdown
-- NO Telegram mention in the initial DM
+-- dm --
+The initial cold DM to send right now. Write it in exactly THREE paragraphs separated by blank lines. Total ~120–150 words across all three paragraphs. Plain text only — no markdown, no bullet points.
 
-── followUp1 ──
-Day 3 follow-up. ONE sentence only. "Making sure this didn't get buried" energy. Zero pitch, zero pressure.
+Paragraph 1 — Hook (exactly 2 sentences):
+  Sentence 1: reference something specific from their thread AND state you have built a similar system before. Never open with a compliment or observation alone — the very first sentence must make clear you have done this work.
+  Sentence 2: directly ask for the work using confident, assumptive language such as "I'd like to handle the dev side for you" or "let me take this on" — NOT conditional phrasing like "if you ever need" or "in case you're looking."
 
-── followUp2 ──
-Day 7 follow-up. 2–3 sentences. Introduce ONE new relevant capability or example (different from the DM). Mention Telegram naturally once: "easier to hash it out on Telegram if you use it — @zeeshanahmad4"
+Paragraph 2 — Social proof (exactly 2 sentences):
+  Sentence 1: say "I'm Top Rated Plus on Upwork with 70+ projects and $150k+ earned, all 5-star ratings" and include this exact Upwork URL verbatim: https://www.upwork.com/freelancers/~0180a61cf01f9bc71d — do NOT paraphrase or omit the URL.
+  Sentence 2: mention you are currently free and actively looking for new projects — weave this in naturally, not desperately.
 
-── followUp3 ──
+Paragraph 3 — CTA (1–2 sentences):
+  Offer a Google Meet interview so they can evaluate you, and mention Telegram @devpilot1 as an easy way to connect. Keep it short and inviting, not pushy.
+
+After paragraph 3, on their own lines, put exactly two YouTube demo URLs with project names. These must be the absolute last thing in the message — nothing after them.
+
+-- followUp1 --
+Day 3 follow-up. ONE sentence only. Must include these elements — you are currently free and looking for new work, you're open to a meeting where they can evaluate you, and they can reach you on Telegram @devpilot1. Do not pitch. Do not add anything else.
+
+-- followUp2 --
+Day 7 follow-up. 2–3 sentences. Add one new relevant angle (different capability or past example). Mention Telegram naturally once: "easier to hash it out on Telegram if you use it — @devpilot1"
+
+-- followUp3 --
 Day 14 follow-up. 1–2 sentences. Gentle close — "if timing isn't right, no worries" energy. Leave door totally open.
 
 Global rules for all four:
 - Plain text only — no markdown, no bullet points
-- Never sound desperate or mass-outreach-ish
 - Each message must standalone (they may not have read any previous one)
 - Return ONLY the JSON object — no extra text, no code fences`;
 
   const systemPrompt = buildOutreachSystemPrompt(functionInstructions);
-  const userPrompt   = `Thread by @${posterUsername || 'the thread owner'}: "${title}"\n\nDescription:\n${(description || '').substring(0, 800)}\n\nReturn the JSON object with keys: dm, followUp1, followUp2, followUp3.`;
+  const userPrompt   = `Thread by @${posterUsername || 'the thread owner'}: "${title}"\n\nDescription:\n${(description || '').substring(0, 1000)}\n\nReturn the JSON object with keys: dm, followUp1, followUp2, followUp3.`;
 
   // Pass 1 — save the exact prompt before sending to OpenAI
   await _saveOutreachPromptLog({ username: posterUsername, title, systemPrompt, userPrompt });
 
   const raw = await callAI(systemPrompt, userPrompt, {
-    temperature:  0.8,
-    max_tokens:   700,
-    functionName: 'generateThreadsOwnerOutreachDMAndFollowUps',
+    temperature:    0.8,
+    max_tokens:     700,
+    functionName:   'generateThreadsOwnerOutreachDMAndFollowUps',
+    responseFormat: 'json',  // strips ```json fences before returning
   });
 
   // Pass 2 — append the raw AI response to the same file
@@ -869,9 +875,26 @@ Global rules for all four:
       followUp3: (parsed.followUp3 || parsed.follow_up_3 || '').trim(),
     };
   } catch {
-    logger.warn('generateThreadsOwnerOutreachDMAndFollowUps: failed to parse JSON — retrying with text fallback');
-    // Graceful fallback: treat the whole response as the DM, leave follow-ups empty
-    return { dmText: raw.trim(), followUp1: '', followUp2: '', followUp3: '' };
+    // Second attempt: try extracting JSON object from anywhere in the string
+    // (handles cases where the model prepends/appends extra text despite instructions)
+    try {
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        logger.warn('generateThreadsOwnerOutreachDMAndFollowUps: extracted JSON from mixed response');
+        return {
+          dmText:    (parsed.dm    || parsed.dmText   || '').trim(),
+          followUp1: (parsed.followUp1 || parsed.follow_up_1 || '').trim(),
+          followUp2: (parsed.followUp2 || parsed.follow_up_2 || '').trim(),
+          followUp3: (parsed.followUp3 || parsed.follow_up_3 || '').trim(),
+        };
+      }
+    } catch { /* fall through */ }
+
+    // Last resort: log and return empty so the target is skipped rather than sending garbage
+    logger.error('generateThreadsOwnerOutreachDMAndFollowUps: could not parse JSON after all attempts — raw response saved to prompt log');
+    logger.error(`generateThreadsOwnerOutreachDMAndFollowUps: raw=${raw.slice(0, 200)}`);
+    return { dmText: '', followUp1: '', followUp2: '', followUp3: '' };
   }
 }
 

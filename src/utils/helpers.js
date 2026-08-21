@@ -82,21 +82,55 @@ export function shouldTakeAction(threadAgeCategory) {
 }
 
 /**
- * Returns true if a DM should be sent to a thread based on its age.
- * Per dev plan §3.2: only DM poster on fresh threads (<30 days old).
- * Old/ancient threads get a comment only.
- * GAP-02
+ * Returns true if the current time falls within active operating hours:
+ * 9:00 AM – 11:00 PM Pakistan Standard Time (UTC+5, no DST).
+ * The bot sleeps outside these hours to avoid looking like a 24/7 robot.
+ * GAP-04
  */
 export function shouldSendDM(threadAgeCategory) {
   return threadAgeCategory === 'fresh';
 }
 
 /**
- * Returns true if the current time falls within active operating hours:
- * 9:00 AM – 11:00 PM Pakistan Standard Time (UTC+5, no DST).
- * The bot sleeps outside these hours to avoid looking like a 24/7 robot.
- * GAP-04
+ * Strip markdown formatting before sending to BHW's Froala editor.
+ * BHW submits plain text — markdown characters appear literally in the
+ * sent message (e.g. **bold** shows as **bold**).
+ *
+ * Handles: bold/italic asterisks, headings, inline code, code blocks,
+ * horizontal rules, leading bullet/numbered-list markers.
  */
+export function sanitizeBHWMessage(text) {
+  if (!text) return '';
+  return text
+    // Code blocks (``` ... ```)
+    .replace(/```[\s\S]*?```/g, (match) => match.replace(/```/g, '').trim())
+    // Inline code (`code`)
+    .replace(/`([^`]+)`/g, '$1')
+    // Bold+italic (***text*** or ___text___)
+    .replace(/\*{3}(.+?)\*{3}/g, '$1')
+    .replace(/_{3}(.+?)_{3}/g, '$1')
+    // Bold (**text** or __text__)
+    .replace(/\*{2}(.+?)\*{2}/g, '$1')
+    .replace(/_{2}(.+?)_{2}/g, '$1')
+    // Italic (*text* or _text_) — single char, not mid-word
+    .replace(/(^|\s)\*([^*\n]+)\*(\s|$)/g, '$1$2$3')
+    .replace(/(^|\s)_([^_\n]+)_(\s|$)/g, '$1$2$3')
+    // ATX headings (# Heading)
+    .replace(/^#{1,6}\s+/gm, '')
+    // Horizontal rules (--- or ***)
+    .replace(/^[-*]{3,}\s*$/gm, '')
+    // Blockquotes (> text)
+    .replace(/^>\s?/gm, '')
+    // Bullet list markers (- item or * item or + item)
+    .replace(/^[\-\*\+]\s+/gm, '')
+    // Numbered list markers (1. item)
+    .replace(/^\d+\.\s+/gm, '')
+    // Trim each line + collapse 3+ consecutive blank lines to 2
+    .split('\n').map(l => l.trimEnd()).join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function isActiveHours() {
   const now = new Date();
   const pktHour = (now.getUTCHours() + 5) % 24; // PKT = UTC+5

@@ -41,8 +41,8 @@ Senior full-stack bot engineer who owns the entire reactive outreach pipeline �
   - `last_response_from = 'them'` → PAUSE (inbox-monitor handles the reply)
   - `last_response_from = 'us'` → SEND the pre-written message
   - PAUSED + cold 3+ days → RESCHEDULE 1–6 hrs from now
-- **Handoff detection:** AI reply contains `[HANDOFF]` tag → strip tag, mark `is_handed_off = true` in DB, fire `sendHandoffAlert()` via WhatsApp
-- **Telegram redirect detection:** Conversation reply mentions redirecting to Telegram → fire `sendTelegramRedirectAlert()`
+- **Handoff detection:** AI reply contains `[HANDOFF]` tag → strip tag, mark `is_handed_off = true` in DB, fire `sendHandoffAlert()` via Discord
+- **Lead CTA redirect detection:** Conversation reply mentions redirecting to Telegram sales handle (@bitbashagency) → fire `sendLeadCTAAlert()`
 - **Urgency detection:** `aiEngine.detectUrgencyAI(text)` — two-stage (keyword pre-screen + AI confirmation) → fire `sendCallReminder()`
 - **Hot lead alert threshold:** `aiEngine.scoreLeadHotness()` returns score 1–10; alert fires if score >= 8
 - **Comment→DM pause:** `randomDelay(2 min, 4 min)` between posting comment and sending DM on same lead

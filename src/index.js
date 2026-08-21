@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import logger from './utils/logger.js';
 import { sleep, randomDelay, shouldSendDM, isActiveHours } from './utils/helpers.js';
 import { initDatabase } from './database/init.js';
-import { getQualifiedLeadsToContact, getDailyStats, getDailyActionCounts } from './database/queries.js';
+import { getQualifiedLeadsToContact, getDailyStats, getDailyActionCounts, getNicheScoutDayStats, getNicheScoutWeekStats, getNicheScoutSkippedPosts } from './database/queries.js';
 import { BHWScraper } from './scraper/index.js';
 import { generateAndPostComment } from './engines/comment.js';
 import { config } from './config/config.js';
@@ -16,6 +16,7 @@ import { botState } from './utils/botState.js';
 import { startCommandCenter } from './services/commandCenter.js';
 import { initDiscord } from './services/discordClient.js';
 import { startThreadsOwnerOutreach } from './engines/threads-owner-outreach.js';
+import { runNicheScout } from './engines/niche-scout.js';
 
 dotenv.config();
 
@@ -216,13 +217,17 @@ async function startScraperAndOutreachLoop() {
       ].join('\n')).catch(() => {});
     }
 
-    // ── CF exponential backoff ───────────────────────────────────────
-    // Hammering a blocked datacenter IP every 10–20 min makes CF worse.
+    // ── CF backoff (gentle — keep testing cycles short) ──────────────
+    // Do NOT jump to 30–60 min on first fail. Use scrape-interval scale:
+    // streak 1 ≈ minMs (~10m), then grow slowly, hard-cap 20 min.
     if (scrapeResult?.cloudflareBlocked) {
       cfFailStreak += 1;
-      const base = Math.max(minMs, 30 * 60 * 1000); // at least 30 min
-      const backedOff = Math.min(2 * 60 * 60 * 1000, base * Math.pow(2, cfFailStreak - 1));
-      const jitter = Math.floor(backedOff * 0.15 * Math.random());
+      const base = Math.max(minMs, 5 * 60 * 1000); // floor 5 min
+      const backedOff = Math.min(
+        20 * 60 * 1000, // hard cap 20 min while we validate Pipeline C
+        Math.floor(base * (1 + 0.5 * (cfFailStreak - 1)))
+      );
+      const jitter = Math.floor(backedOff * 0.1 * Math.random());
       intervalMs = backedOff + jitter;
       const nextMinStr = Math.round(intervalMs / 60000);
 
@@ -231,7 +236,7 @@ async function startScraperAndOutreachLoop() {
         '',
         'BHW returned a Cloudflare challenge — posts could not be loaded.',
         '',
-        `⏭ Backing off ~${nextMinStr} min (streak: ${cfFailStreak})`,
+        `⏭ Retrying in ~${nextMinStr} min (streak: ${cfFailStreak})`,
         '⚠️ Anonymous scraper only — no login. If this keeps repeating, the server IP may be rate-limited.',
       ].join('\n')).catch(() => {});
 
@@ -284,6 +289,14 @@ async function startScraperAndOutreachLoop() {
       );
     }
 
+    // ── Pipeline D — Niche Comment Scout (after Hire-a-Freelancer scrape) ─
+    // Runs even in Pipeline C-only mode. Never comments — Discord notify only.
+    if (config.nicheScout?.enabled && scrapeResult && !scrapeResult.cloudflareBlocked) {
+      await runNicheScout().catch(err =>
+        logger.error(`[NicheScout] ${err.message}`)
+      );
+    }
+
     // ── Schedule next tick ────────────────────────────────────────────
     const nextMinStr = Math.round(intervalMs / 60000);
     logger.info(`\n  ⏰  Next scrape in ${nextMinStr} min${cfFailStreak ? ` (CF backoff streak ${cfFailStreak})` : ` (randomised ${Math.round(minMs / 60000)}–${Math.round(maxMs / 60000)} min window)`}`);
@@ -300,31 +313,60 @@ async function startScraperAndOutreachLoop() {
  * Collects real stats from the DB for the previous period.
  */
 function scheduleDailyReport() {
-  const msUntil9am = () => {
+  const msUntilHour = (hour) => {
     const now  = new Date();
     const next = new Date(now);
-    next.setHours(9, 0, 0, 0);
-    if (next <= now) next.setDate(next.getDate() + 1); // missed today's 9am → schedule tomorrow
+    next.setHours(hour, 0, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
     return next - now;
   };
 
-  const fireReport = async () => {
+  const fireMorningReport = async () => {
     try {
       logger.info('📊  Generating daily report…');
       const stats = await getDailyStats();
+      if (config.nicheScout?.enabled) {
+        const [today, week] = await Promise.all([
+          getNicheScoutDayStats(),
+          getNicheScoutWeekStats(7),
+        ]);
+        stats.nicheScout = { today, week };
+      }
       await alerts.sendDailyReport(stats);
       logger.info(`📊  Daily report sent (DMs: ${stats.dmsSent}, Leads: ${stats.leadsScraped})`);
     } catch (err) {
       logger.error('Daily report failed:', err.message);
     }
-    // Reschedule for the next 9am (24h)
-    setTimeout(fireReport, msUntil9am());
+    setTimeout(fireMorningReport, msUntilHour(9));
   };
 
-  const delay = msUntil9am();
-  const hrsUntil = Math.round(delay / 1000 / 60 / 60 * 10) / 10;
-  logger.info(`📊  Daily report scheduled — fires in ${hrsUntil}h (09:00 AM every day)`);
-  setTimeout(fireReport, delay);
+  /** End-of-day Niche Scout: niche counts + list of skips (missed / no niche match). */
+  const fireNicheScoutEodReport = async () => {
+    try {
+      if (!config.nicheScout?.enabled) {
+        setTimeout(fireNicheScoutEodReport, msUntilHour(23));
+        return;
+      }
+      logger.info('📊  Generating Niche Scout end-of-day report…');
+      const [today, week, skipped] = await Promise.all([
+        getNicheScoutDayStats(),
+        getNicheScoutWeekStats(7),
+        getNicheScoutSkippedPosts(new Date(), 100),
+      ]);
+      await alerts.sendNicheScoutDailyReport({ today, week, skipped });
+      logger.info(`📊  Niche Scout EOD sent (matched today: ${(today.fit || 0) + (today.maybe || 0)}, skips: ${skipped.length})`);
+    } catch (err) {
+      logger.error('Niche Scout EOD report failed:', err.message);
+    }
+    setTimeout(fireNicheScoutEodReport, msUntilHour(23));
+  };
+
+  const delay9 = msUntilHour(9);
+  const delay23 = msUntilHour(23);
+  logger.info(`📊  Daily report scheduled — fires in ${Math.round(delay9 / 36e5 * 10) / 10}h (09:00 every day)`);
+  logger.info(`📊  Niche Scout EOD scheduled — fires in ${Math.round(delay23 / 36e5 * 10) / 10}h (23:00 every day)`);
+  setTimeout(fireMorningReport, delay9);
+  setTimeout(fireNicheScoutEodReport, delay23);
 }
 
 // ── Heartbeat ────────────────────────────────────────────────────────────────
@@ -401,9 +443,11 @@ async function main() {
       logger.info('   • Scraper: anonymous (no login / no bhwSession)');
       logger.info('   • Pipeline A comment/DM: OFF');
       logger.info('   • Pipeline B outreach: OFF');
+      logger.info(`   • Pipeline D Niche Scout: ${config.nicheScout?.enabled ? 'ON' : 'OFF (set NICHE_SCOUT_ENABLED=true)'}`);
       logger.info('   • Discord: Pipeline C job cards + CF alerts + 9 AM report + 6h heartbeat\n');
     } else {
       logger.info('\n✅  Bot running — full scrape + outreach mode');
+      logger.info(`   • Pipeline D Niche Scout: ${config.nicheScout?.enabled ? 'ON' : 'OFF'}`);
       logger.info('   • Discord: alerts + 9 AM daily summary + 6h heartbeat\n');
     }
 

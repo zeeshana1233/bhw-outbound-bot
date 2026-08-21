@@ -345,7 +345,7 @@ class BHWSessionManager {
       this.sessionDown = true;
       this.isAuthenticated = false;
 
-      // Fire WhatsApp alert ONCE per outage (not on every retry)
+      // Fire Discord alert ONCE per outage (not on every retry)
       if (!this._alertedDown) {
         this._alertedDown = true;
         alerts.sendSessionExpiredAlert().catch(() => {});
@@ -365,11 +365,11 @@ class BHWSessionManager {
    *
    * Behaviour:
    *  - Runs a silent verification every 30 minutes while the session is healthy
-   *  - If the session dies: marks sessionDown=true, fires WhatsApp alert ONCE,
-   *    then switches to a fast retry loop (every 5 min) waiting for the user
-   *    to refresh bhw-cookies.json
-   *  - When cookies are refreshed and session comes back: fires a "session
-   *    restored" WhatsApp and resumes normal 30-min checks
+    *  - If the session dies: marks sessionDown=true, fires Discord alert ONCE,
+    *    then switches to a fast retry loop (every 5 min) waiting for the user
+    *    to refresh bhw-cookies.json
+    *  - When cookies are refreshed and session comes back: fires a "session
+    *    restored" Discord alert and resumes normal 30-min checks
    *
    * Call once from main() after initDatabase().
    */
@@ -416,7 +416,7 @@ class BHWSessionManager {
           this._alertedDown = false;
           logger.info('[HealthCheck] ✅  Session restored — bot resuming normal operation.');
 
-          // WhatsApp: let Zeeshan know it's back
+          // Discord: let Zeeshan know it's back
           alerts.sendRawAlert(
             '✅ *BHW Session Restored*\n\nCookies are valid again. Bot has resumed automatically.'
           ).catch(() => {});

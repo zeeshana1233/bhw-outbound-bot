@@ -1,19 +1,22 @@
 /**
- * Command Center — Telegram Group two-way bot control
+ * Command Center — Discord Channel two-way bot control
  *
- * Zeeshan uses a Telegram group with the bot added as admin.
- * The bot listens for slash commands in the group and replies there.
- * All alerts (handoff, hot lead, daily report …) also go to the same group
+ * Zeeshan uses a Discord channel with the bot added to the server.
+ * The bot listens for slash commands in the channel and replies there.
+ * All alerts (handoff, hot lead, daily report …) also go to the same channel
  * via alerts.js — one place for everything.
  *
- * ── SETUP (one-time, ~2 minutes) ──────────────────────────────────────────
- *  1. Create a bot via @BotFather on Telegram → copy the token
- *  2. Create a Telegram group, add the bot, give it admin rights
- *  3. Get the group chat ID (use @userinfobot or Telegram API)
- *  4. Set in .env:
- *       TELEGRAM_BOT_TOKEN=<token>
- *       TELEGRAM_GROUP_ID=<chat-id>  (negative number, e.g. -5054203181)
- *  5. Start the bot — no QR, no auth, just works
+ * ── SETUP (one-time, ~5 minutes) ──────────────────────────────────────────
+ *  1. Go to https://discord.com/developers/applications → New Application
+ *  2. Bot tab → Add Bot → copy the token
+ *  3. OAuth2 → URL Generator → scopes: bot + applications.commands
+ *     Bot permissions: Send Messages, Read Message History, Use Slash Commands
+ *  4. Use the generated URL to invite the bot to your server
+ *  5. Right-click the control channel → Copy Channel ID (requires Developer Mode)
+ *  6. Set in .env:
+ *       DISCORD_BOT_TOKEN=<token>
+ *       DISCORD_CHANNEL_ID=<channel-snowflake-id>
+ *  7. Start the bot — slash commands auto-register on startup
  *
  * ── AVAILABLE SLASH COMMANDS ─────────────────────────────────────────────
  *  /status          — full system snapshot (session, paused, uptime, today's stats)
@@ -25,22 +28,22 @@
  *  /session         — BHW cookie health check
  *  /pause           — freeze all bot actions (scraper, DMs, replies, follow-ups)
  *  /resume          — unfreeze
- *  /dryrun on       — enable dry-run (safe mode, no real sends)
- *  /dryrun off      — go live (real DMs + comments sent)
- *  /convert <user>  — mark a lead as converted
- *  /skip <user>     — disqualify / blacklist a lead
- *  /pausefollowup <user> — stop chasing a specific lead
+ *  /dryrun          — toggle safe mode (option: on | off)
+ *  /convert         — mark a lead as converted (option: username)
+ *  /skip            — disqualify / blacklist a lead (option: username)
+ *  /pausefollowup   — stop chasing a specific lead (option: username)
  *  /forcereport     — send the daily report right now
  *  /community       — community comment stats
  *  /help            — show this list
  */
 
+import { SlashCommandBuilder } from 'discord.js';
 import logger from '../utils/logger.js';
 import { botState } from '../utils/botState.js';
 import alerts from './alerts.js';
 import bhwSession from '../utils/bhwSession.js';
-import { getBot, isReady } from './telegramClient.js';
-import { sendToGroup } from './telegramClient.js';
+import { getClient, isReady, getChannelId, registerSlashCommands } from './discordClient.js';
+import { sendToChannel } from './discordClient.js';
 import {
   getDailyStats,
   getHandedOffConversations,
@@ -50,19 +53,43 @@ import {
   disqualifyLead,
   convertLead,
   pauseFollowUpsForUsername,
+  getNicheScoutDayStats,
+  getNicheScoutWeekStats,
+  getNicheScoutSkippedPosts,
 } from '../database/queries.js';
+import { config } from '../config/config.js';
 import { query } from '../database/init.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// REPLY HELPER — sends to the Telegram control group
+// REPLY HELPER — sends to the Discord control channel
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Send a reply to the control group (plain sendToGroup call) */
+/** Send a reply to the control channel (plain sendToChannel call) */
 async function reply(text) {
   try {
-    await sendToGroup(text);
+    await sendToChannel(text);
   } catch (err) {
     logger.error('[CommandCenter] reply failed:', err.message);
+  }
+}
+
+/**
+ * Reply to a Discord interaction (slash command).
+ * Uses interaction.reply() if not yet replied, else followUp().
+ * Falls back to sendToChannel() if the interaction is no longer valid.
+ */
+async function replyToInteraction(interaction, text) {
+  try {
+    // Discord has a 2000-char limit — truncate if needed
+    const safe = text.length > 1990 ? text.slice(0, 1990) + '…' : text;
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({ content: safe });
+    } else {
+      await interaction.reply({ content: safe });
+    }
+  } catch (err) {
+    logger.warn('[CommandCenter] interaction reply failed, falling back to channel:', err.message);
+    await reply(text).catch(() => {});
   }
 }
 
@@ -76,14 +103,14 @@ async function handleStatus() {
   const sessionOk = !bhwSession.isSessionDown();
 
   const lines = [
-    `🤖 *Bitbash BHW Bot — Status*`,
+    `🤖 **Bitbash BHW Bot — Status**`,
     ``,
     `🔌 Session:  ${sessionOk ? '✅ Active' : '❌ DOWN'}`,
     `⏸  Paused:   ${state.paused ? `Yes — ${state.pausedReason}` : 'No (running)'}`,
     `🧪 Mode:     ${state.dryRun ? 'DRY RUN (safe)' : '🔴 LIVE'}`,
     `⏱  Uptime:   ${state.uptime}`,
     ``,
-    `📊 *Today*`,
+    `📊 **Today**`,
     stats
       ? [
           `   Scraped:  ${stats.leadsScraped}`,
@@ -94,13 +121,13 @@ async function handleStatus() {
         ].join('\n')
       : '   (stats unavailable)',
   ];
-  await reply(lines.join('\n'));
+  return lines.join('\n');
 }
 
 async function handleStats() {
   const stats = await getDailyStats();
   const lines = [
-    `📊 *Daily Stats — ${stats.date}*`,
+    `📊 **Daily Stats — ${stats.date}**`,
     ``,
     `Leads scraped:   ${stats.leadsScraped}`,
     `DMs sent:        ${stats.dmsSent}`,
@@ -108,13 +135,13 @@ async function handleStats() {
     `Handoffs:        ${stats.handoffs}`,
     `Conversions:     ${stats.conversions}`,
   ];
-  await reply(lines.join('\n'));
+  return lines.join('\n');
 }
 
 async function handleLeads() {
   const f = await getLeadsFunnelStats();
   const lines = [
-    `🎯 *Lead Funnel*`,
+    `🎯 **Lead Funnel**`,
     ``,
     `Total scraped:  ${f.total}`,
     `Qualified:      ${f.qualified}`,
@@ -123,35 +150,35 @@ async function handleLeads() {
     `Replied:        ${f.replied}`,
     `Converted 🏆:   ${f.converted}`,
   ];
-  await reply(lines.join('\n'));
+  return lines.join('\n');
 }
 
 async function handleHandoffs() {
   const rows = await getHandedOffConversations();
   if (rows.length === 0) {
-    return reply('✅ No handoffs — bot is handling everything.');
+    return '✅ No handoffs — bot is handling everything.';
   }
   const lines = [
-    `🚨 *${rows.length} Conversation(s) Waiting for You*`,
+    `🚨 **${rows.length} Conversation(s) Waiting for You**`,
     ``,
     ...rows.slice(0, 10).map((r, i) =>
       `${i + 1}. @${r.poster_username} — "${(r.lead_title || 'no title').slice(0, 50)}"\n   📎 ${r.bhw_conversation_url || r.thread_url || 'no link'}`
     ),
     rows.length > 10 ? `\n…and ${rows.length - 10} more.` : '',
   ];
-  await reply(lines.filter(Boolean).join('\n'));
+  return lines.filter(Boolean).join('\n');
 }
 
 async function handleConvos() {
   const s = await getActiveConversationsStats();
   const lines = [
-    `💬 *Conversations*`,
+    `💬 **Conversations**`,
     ``,
     `Active (bot managing): ${s.active}`,
     `Handed off (yours):    ${s.handedOff}`,
     `Total ever:            ${s.total}`,
   ];
-  await reply(lines.join('\n'));
+  return lines.join('\n');
 }
 
 async function handleFollowUps() {
@@ -160,72 +187,82 @@ async function handleFollowUps() {
     ? s.nextDue.toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' })
     : 'none';
   const lines = [
-    `🔁 *Follow-Ups*`,
+    `🔁 **Follow-Ups**`,
     ``,
     `Pending: ${s.pendingCount}`,
     `Next due: ${nextStr}`,
   ];
-  await reply(lines.join('\n'));
+  return lines.join('\n');
 }
 
 async function handleSession() {
   const down = bhwSession.isSessionDown();
-  await reply(down
-    ? '❌ *BHW Session is DOWN*\nCookies have expired. Bot is paused on BHW actions.\nCheck Telegram — an alert was sent when this happened.'
-    : '✅ *BHW Session is healthy.*\nCookies are valid and authenticated.');
+  return down
+    ? '❌ **BHW Session is DOWN**\nCookies have expired. Bot is paused on BHW actions.\nCheck Discord — an alert was sent when this happened.'
+    : '✅ **BHW Session is healthy.**\nCookies are valid and authenticated.';
 }
 
 async function handlePause() {
   if (botState.isPaused()) {
-    return reply('⏸ Already paused. Send /resume to restart.');
+    return '⏸ Already paused. Send /resume to restart.';
   }
-  botState.pause('manual via Telegram');
-  await reply('⏸ *Bot paused.*\nScraper, DMs, inbox replies and follow-ups are all frozen.\nSend /resume to restart.');
+  botState.pause('manual via Discord');
+  return '⏸ **Bot paused.**\nScraper, DMs, inbox replies and follow-ups are all frozen.\nSend /resume to restart.';
 }
 
 async function handleResume() {
   if (!botState.isPaused()) {
-    return reply('▶️ Already running — nothing to resume.');
+    return '▶️ Already running — nothing to resume.';
   }
   botState.resume();
-  await reply('▶️ *Bot resumed.*\nAll engines are running again.');
+  return '▶️ **Bot resumed.**\nAll engines are running again.';
 }
 
 async function handleDryRun(on) {
   botState.setDryRun(on);
-  const msg = on
-    ? '🧪 *Dry-run ON* — safe mode. No real DMs or comments will be sent.'
-    : '🔴 *Dry-run OFF* — LIVE mode. Real DMs and comments are now being sent!';
-  await reply(msg);
+  return on
+    ? '🧪 **Dry-run ON** — safe mode. No real DMs or comments will be sent.'
+    : '🔴 **Dry-run OFF** — LIVE mode. Real DMs and comments are now being sent!';
 }
 
 async function handleConvert(username) {
-  if (!username) return reply('Usage: /convert <username>\nExample: /convert john23');
+  if (!username) return 'Usage: /convert username:john23';
   const lead = await convertLead(username);
-  if (!lead) return reply(`❌ @${username} not found in leads database.`);
-  await reply(`🏆 *Converted!*\n@${username} marked as converted. Great work!`);
+  if (!lead) return `❌ @${username} not found in leads database.`;
+  return `🏆 **Converted!**\n@${username} marked as converted. Great work!`;
 }
 
 async function handleSkip(username) {
-  if (!username) return reply('Usage: /skip <username>\nExample: /skip spammer99');
+  if (!username) return 'Usage: /skip username:spammer99';
   const lead = await disqualifyLead(username);
-  if (!lead) return reply(`❌ @${username} not found in leads database.`);
-  await reply(`🚫 @${username} disqualified and skipped. Bot will no longer contact them.`);
+  if (!lead) return `❌ @${username} not found in leads database.`;
+  return `🚫 @${username} disqualified and skipped. Bot will no longer contact them.`;
 }
 
 async function handlePauseFollowUp(username) {
-  if (!username) return reply('Usage: /pausefollowup <username>\nExample: /pausefollowup mike44');
+  if (!username) return 'Usage: /pausefollowup username:mike44';
   const result = await pauseFollowUpsForUsername(username);
-  if (!result) return reply(`❌ @${username} not found, or no active conversation / follow-ups.`);
+  if (!result) return `❌ @${username} not found, or no active conversation / follow-ups.`;
   const count = Array.isArray(result) ? result.length : 1;
-  await reply(`⏸ Paused ${count} follow-up(s) for @${username}.`);
+  return `⏸ Paused ${count} follow-up(s) for @${username}.`;
 }
 
 async function handleForceReport() {
-  await reply('📊 Generating report and sending to Telegram…');
+  await reply('📊 Generating report and sending to Discord…');
   const stats = await getDailyStats();
+  if (config.nicheScout?.enabled) {
+    const [today, week, skipped] = await Promise.all([
+      getNicheScoutDayStats(),
+      getNicheScoutWeekStats(7),
+      getNicheScoutSkippedPosts(new Date(), 100),
+    ]);
+    stats.nicheScout = { today, week };
+    await alerts.sendDailyReport(stats);
+    await alerts.sendNicheScoutDailyReport({ today, week, skipped });
+    return '✅ Daily report + Niche Scout EOD sent to Discord.';
+  }
   await alerts.sendDailyReport(stats);
-  await reply('✅ Daily report sent to Telegram.');
+  return '✅ Daily report sent to Discord.';
 }
 
 async function handleCommunity() {
@@ -241,7 +278,7 @@ async function handleCommunity() {
     `);
     const row = result.rows[0];
     const lines = [
-      `💬 *Community Comments*`,
+      `💬 **Community Comments**`,
       ``,
       `Total posted:  ${row.total}`,
       `Today:         ${row.today}`,
@@ -250,17 +287,17 @@ async function handleCommunity() {
       ``,
       `Next scan fires automatically every 4–6h. Max 3 comments per run.`,
     ];
-    await reply(lines.join('\n'));
+    return lines.join('\n');
   } catch (err) {
-    await reply(`⚠️ Could not load community stats: ${err.message}`);
+    return `⚠️ Could not load community stats: ${err.message}`;
   }
 }
 
 async function handleHelp() {
   const help = [
-    `🤖 *Bitbash BHW Bot — Commands*`,
+    `🤖 **Bitbash BHW Bot — Commands**`,
     ``,
-    `*Status & Data*`,
+    `**Status & Data**`,
     `  /status            — full snapshot`,
     `  /stats             — today's numbers`,
     `  /leads             — lead funnel`,
@@ -269,119 +306,187 @@ async function handleHelp() {
     `  /followups         — pending follow-ups`,
     `  /session           — BHW cookie health`,
     ``,
-    `*Bot Control*`,
+    `**Bot Control**`,
     `  /pause             — freeze all actions`,
     `  /resume            — unfreeze`,
-    `  /dryrun on         — toggle safe mode`,
-    `  /dryrun off        — go live`,
-    `  /forcereport       — send Telegram report now`,
+    `  /dryrun mode:on    — toggle safe mode`,
+    `  /dryrun mode:off   — go live`,
+    `  /forcereport       — send Discord report now`,
     `  /community         — community comment stats`,
     ``,
-    `*Lead Actions*`,
-    `  /convert <user>    — mark as won`,
-    `  /skip <user>       — disqualify lead`,
-    `  /pausefollowup <user> — stop chasing a lead`,
+    `**Lead Actions**`,
+    `  /convert username:<user>    — mark as won`,
+    `  /skip username:<user>       — disqualify lead`,
+    `  /pausefollowup username:<user> — stop chasing a lead`,
   ];
-  await reply(help.join('\n'));
+  return help.join('\n');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TELEGRAM GROUP LISTENER — slash command registration
+// SLASH COMMAND DEFINITIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SLASH_COMMANDS = [
+  new SlashCommandBuilder().setName('status').setDescription('Full system snapshot'),
+  new SlashCommandBuilder().setName('stats').setDescription("Today's numbers"),
+  new SlashCommandBuilder().setName('leads').setDescription('Lead funnel overview'),
+  new SlashCommandBuilder().setName('handoffs').setDescription('Conversations waiting for you'),
+  new SlashCommandBuilder().setName('convos').setDescription('Active conversation counts'),
+  new SlashCommandBuilder().setName('followups').setDescription('Pending follow-up count + next due'),
+  new SlashCommandBuilder().setName('session').setDescription('BHW cookie health check'),
+  new SlashCommandBuilder().setName('pause').setDescription('Freeze all bot actions'),
+  new SlashCommandBuilder().setName('resume').setDescription('Unfreeze all bot actions'),
+  new SlashCommandBuilder()
+    .setName('dryrun')
+    .setDescription('Toggle safe/live mode')
+    .addStringOption(opt =>
+      opt.setName('mode')
+        .setDescription('on = safe mode, off = live')
+        .setRequired(true)
+        .addChoices(
+          { name: 'on',  value: 'on' },
+          { name: 'off', value: 'off' },
+        )
+    ),
+  new SlashCommandBuilder()
+    .setName('convert')
+    .setDescription('Mark a lead as converted')
+    .addStringOption(opt =>
+      opt.setName('username')
+        .setDescription('BHW username of the lead')
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('skip')
+    .setDescription('Disqualify / blacklist a lead')
+    .addStringOption(opt =>
+      opt.setName('username')
+        .setDescription('BHW username to skip')
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('pausefollowup')
+    .setDescription('Stop chasing a specific lead')
+    .addStringOption(opt =>
+      opt.setName('username')
+        .setDescription('BHW username to pause follow-ups for')
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder().setName('forcereport').setDescription('Send the daily report right now'),
+  new SlashCommandBuilder().setName('community').setDescription('Community comment stats'),
+  new SlashCommandBuilder().setName('help').setDescription('Show all commands'),
+].map(cmd => cmd.toJSON());
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DISCORD CHANNEL LISTENER — slash command registration
 // ─────────────────────────────────────────────────────────────────────────────
 
 let _running = false;
 
 /**
- * Start the Telegram command center.
- * Registers slash command handlers on the shared Telegraf bot singleton.
- * Only processes messages from the configured Telegram group (TELEGRAM_GROUP_ID).
- * Dispatches commands and replies to the same group.
+ * Start the Discord command center.
+ * Registers slash command handlers on the shared discord.js Client singleton.
+ * Only processes interactions from the configured Discord channel (DISCORD_CHANNEL_ID).
+ * Dispatches commands and replies to the same channel.
  *
- * Call this AFTER initTelegram() in index.js — the bot must already be
+ * Call this AFTER initDiscord() in index.js — the client must already be
  * initialized before registering handlers.
+ *
+ * Pass guildId to register commands instantly to a specific server
+ * (recommended during setup). Omit for global registration (up to 1h delay).
  */
-export async function startCommandCenter() {
+export async function startCommandCenter(guildId = process.env.DISCORD_GUILD_ID || null) {
   if (_running) return; // idempotent
 
-  const groupId = process.env.TELEGRAM_GROUP_ID || null;
-  logger.info(`[CommandCenter] Starting — Telegram group ID: ${groupId || '(not set)'}`);
+  const channelId = getChannelId();
+  logger.info(`[CommandCenter] Starting — Discord channel ID: ${channelId || '(not set)'}`);
   _running = true;
 
-  const bot = getBot();
-  if (!bot) {
-    logger.error('[CommandCenter] Telegraf bot not initialized — command center cannot start.');
+  const client = getClient();
+  if (!client) {
+    logger.error('[CommandCenter] Discord client not initialized — command center cannot start.');
     return;
   }
 
-  // ── Group-only guard ──────────────────────────────────────────────────────
-  // All commands must come from the configured group
-  const isFromGroup = (ctx) => {
-    if (!groupId) return true; // if no group set, accept all (dev mode)
-    return String(ctx.chat?.id) === String(groupId);
+  // ── Register slash commands with Discord API ──────────────────────────────
+  await registerSlashCommands(SLASH_COMMANDS, guildId);
+
+  // ── Channel guard — only handle interactions from the configured channel ──
+  const isFromChannel = (interaction) => {
+    if (!channelId) return true; // dev mode: accept all channels
+    return String(interaction.channelId) === String(channelId);
   };
 
-  const wrap = (handler) => async (ctx) => {
-    if (!isFromGroup(ctx)) return;
+  // ── Interaction handler ───────────────────────────────────────────────────
+  const handleInteraction = async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+    if (!isFromChannel(interaction)) return;
+
+    const cmd = interaction.commandName;
+    let responseText = null;
+
     try {
-      await handler(ctx);
+      switch (cmd) {
+        case 'status':       responseText = await handleStatus();       break;
+        case 'stats':        responseText = await handleStats();        break;
+        case 'leads':        responseText = await handleLeads();        break;
+        case 'handoffs':     responseText = await handleHandoffs();     break;
+        case 'convos':       responseText = await handleConvos();       break;
+        case 'followups':    responseText = await handleFollowUps();    break;
+        case 'session':      responseText = await handleSession();      break;
+        case 'pause':        responseText = await handlePause();        break;
+        case 'resume':       responseText = await handleResume();       break;
+        case 'forcereport':  responseText = await handleForceReport();  break;
+        case 'community':    responseText = await handleCommunity();    break;
+        case 'help':         responseText = await handleHelp();         break;
+
+        case 'dryrun': {
+          const mode = interaction.options.getString('mode');
+          const on = mode === 'on';
+          responseText = await handleDryRun(on);
+          break;
+        }
+
+        case 'convert': {
+          const username = interaction.options.getString('username')?.replace(/^@/, '').toLowerCase();
+          responseText = await handleConvert(username);
+          break;
+        }
+
+        case 'skip': {
+          const username = interaction.options.getString('username')?.replace(/^@/, '').toLowerCase();
+          responseText = await handleSkip(username);
+          break;
+        }
+
+        case 'pausefollowup': {
+          const username = interaction.options.getString('username')?.replace(/^@/, '').toLowerCase();
+          responseText = await handlePauseFollowUp(username);
+          break;
+        }
+
+        default:
+          responseText = `🤔 Unknown command \`/${cmd}\`.\nSend /help for the full command list.`;
+      }
     } catch (err) {
       logger.error('[CommandCenter] Command handler error:', err.message);
-      await reply(`⚠️ Error: ${err.message}`).catch(() => {});
+      responseText = `⚠️ Error: ${err.message}`;
+    }
+
+    if (responseText) {
+      await replyToInteraction(interaction, responseText);
     }
   };
 
-  // ── Slash command bindings ────────────────────────────────────────────────
-  bot.command('status',      wrap(() => handleStatus()));
-  bot.command('stats',       wrap(() => handleStats()));
-  bot.command('leads',       wrap(() => handleLeads()));
-  bot.command('handoffs',    wrap(() => handleHandoffs()));
-  bot.command('convos',      wrap(() => handleConvos()));
-  bot.command('followups',   wrap(() => handleFollowUps()));
-  bot.command('session',     wrap(() => handleSession()));
-  bot.command('pause',       wrap(() => handlePause()));
-  bot.command('resume',      wrap(() => handleResume()));
-  bot.command('forcereport', wrap(() => handleForceReport()));
-  bot.command('community',   wrap(() => handleCommunity()));
-  bot.command('help',        wrap(() => handleHelp()));
-  bot.command('start',       wrap(() => handleHelp())); // /start for when bot first added
+  // Register the interaction listener on the Discord client
+  client.on('interactionCreate', handleInteraction);
 
-  // ── Parameterised commands ────────────────────────────────────────────────
-  bot.command('dryrun', wrap((ctx) => {
-    const arg = (ctx.message?.text || '').split(' ')[1]?.toLowerCase();
-    if (arg === 'on' || arg === 'true' || arg === 'enable') return handleDryRun(true);
-    if (arg === 'off' || arg === 'false' || arg === 'disable' || arg === 'live') return handleDryRun(false);
-    return reply('Usage: /dryrun on  or  /dryrun off');
-  }));
-
-  bot.command('convert', wrap((ctx) => {
-    const username = (ctx.message?.text || '').split(' ')[1]?.replace(/^@/, '').toLowerCase();
-    return handleConvert(username);
-  }));
-
-  bot.command('skip', wrap((ctx) => {
-    const username = (ctx.message?.text || '').split(' ')[1]?.replace(/^@/, '').toLowerCase();
-    return handleSkip(username);
-  }));
-
-  bot.command('pausefollowup', wrap((ctx) => {
-    const username = (ctx.message?.text || '').split(' ')[1]?.replace(/^@/, '').toLowerCase();
-    return handlePauseFollowUp(username);
-  }));
-
-  // ── Unknown text messages in the group ───────────────────────────────────
-  // Only respond if it looks like an intentional command attempt (starts with /)
-  bot.on('text', wrap((ctx) => {
-    const text = (ctx.message?.text || '').trim();
-    if (!text.startsWith('/')) return; // ignore normal chat
-    return reply(`🤔 Unknown command.\nSend /help for the full command list.`);
-  }));
-
-  logger.info('[CommandCenter] ✅ Telegram slash commands registered.');
+  logger.info('[CommandCenter] ✅ Discord slash commands registered.');
 
   // Startup ping (retry until bot is ready)
   const pingWhenReady = async (retries = 10) => {
     if (isReady()) {
-      await reply('🟢 *Bot started.*\nSend /status for a full snapshot, or /help for commands.').catch(() => {});
+      await reply('🟢 **Bot started.**\nSend /status for a full snapshot, or /help for commands.').catch(() => {});
       return;
     }
     if (retries > 0) setTimeout(() => pingWhenReady(retries - 1), 3000);

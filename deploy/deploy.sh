@@ -68,19 +68,19 @@ ok "Dependencies installed."
 
 # ── .env check ───────────────────────────────────────────────────────────────
 if [[ ! -f "${APP_DIR}/.env" ]]; then
-  fail ".env file not found at ${APP_DIR}/.env\nUpload it first: scp .env root@SERVER:${APP_DIR}/.env"
+  fail ".env file not found at ${APP_DIR}/.env\nUpload it first: scp .env root@161.97.118.235:${APP_DIR}/.env"
 fi
 ok ".env found."
 
 # ── Session files check ───────────────────────────────────────────────────────
 if [[ ! -f "${APP_DIR}/bhw-cookies.json" ]]; then
   warn "bhw-cookies.json missing — BHW session will not work until you upload it."
-  warn "Run:  scp bhw-cookies.json root@SERVER:${APP_DIR}/"
+  warn "Run:  scp bhw-cookies.json root@161.97.118.235:${APP_DIR}/"
 fi
 
 if [[ ! -d "${APP_DIR}/.wwebjs_auth" ]]; then
   warn ".wwebjs_auth/ missing — WhatsApp will require a QR scan on first start."
-  warn "Run:  scp -r .wwebjs_auth root@SERVER:${APP_DIR}/"
+  warn "Run:  scp -r .wwebjs_auth root@161.97.118.235:${APP_DIR}/"
 fi
 
 # ── DB schema ────────────────────────────────────────────────────────────────

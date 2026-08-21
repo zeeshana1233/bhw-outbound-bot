@@ -13,7 +13,7 @@ or onboarding a new developer/AI session onto this project.
 The bot operates on BlackHatWorld's "Hire a Freelancer" forum on behalf of
 Bitbash Software Development Agency (owner: Zeeshan Ahmad, BHW account: `app_pilot`).
 
-**Two independent outreach pipelines run in parallel:**
+**Three independent pipelines:**
 
 ```
 Pipeline A — Main (Reactive)
@@ -23,15 +23,22 @@ Pipeline A — Main (Reactive)
 
 Pipeline B — Outreach (Proactive)
   Pre-seeded target list → Threads Owner Outreach → Outreach Follow-Up → Outreach Inbox
+
+Pipeline C — Hire-a-Freelancer job notifier (anonymous scrape → Discord)
+
+Pipeline D — Niche Comment Scout
+  After Hire-a-Freelancer scrape → What's New → today + non-marketplace
+  → Relay chatgpt classify → Discord for sales (no bot commenting)
 ```
 
 **Support layer:**
 ```
-AI Engine  →  provides all text generation for both pipelines
+AI Engine  →  provides all text generation for pipelines A/B
+Relay      →  chatgpt gateway for Pipeline D niche classification
 Personas   →  inject the correct character voice per pipeline
-bhwSession →  single authenticated Puppeteer browser shared by all engines
-alerts     →  Telegram notifications for all events
-commandCenter → Telegram group two-way control panel
+bhwSession →  single authenticated Puppeteer browser shared by posting engines
+alerts     →  Discord notifications for all events
+commandCenter → Discord channel two-way control panel
 botState   →  global pause/dryRun flags
 database   →  PostgreSQL via pg Pool; queries.js is the only DB interface
 ```
@@ -45,12 +52,13 @@ database   →  PostgreSQL via pg Pool; queries.js is the only DB interface
 
 **What it does:**
 - Calls `initDatabase()` to run migrations on startup
-- Initialises Telegram bot (`initTelegram`)
-- Starts `startCommandCenter()` (Telegram group control)
-- Schedules `scheduleDailyReport()` (9 AM Telegram summary)
+- Initialises Discord bot (`initDiscord`)
+- Starts `startCommandCenter()` (Discord channel control)
+- Schedules `scheduleDailyReport()` (9 AM Discord summary)
 - Starts `startHeartbeat()` (6-hour alive ping)
 - Runs `startScraperAndOutreachLoop()` — unified scrape + outreach tick every 10–20 min
 - Conditionally starts `startThreadsOwnerOutreach()` if `OUTREACH_ENABLED=true`
+- Conditionally runs `runNicheScout()` after each Hire-a-Freelancer scrape if `NICHE_SCOUT_ENABLED=true`
 
 **Currently commented out (re-enable after first conversion):**
 - `startInboxMonitor()`
@@ -172,13 +180,13 @@ database   →  PostgreSQL via pg Pool; queries.js is the only DB interface
 3. Checks if the last message is already ours (skip if so)
 4. Calls `aiEngine.generateDMReply()` with full conversation history
 5. Detects `[HANDOFF]` tag in the AI reply → fires `sendHandoffAlert` + marks conversation
-6. Detects Telegram redirect intent → fires `sendTelegramRedirectAlert`
+6. Detects lead CTA redirect (reply mentions @bitbashagency Telegram handle) → fires `sendLeadCTAAlert`
 7. Detects urgency → fires `sendCallReminder`
 8. Sends the reply via `sendConversationReply()`
 9. Updates DB: `createDM`, `incrementConversationMessages`, `updateLeadStatus`
 
 **Inputs:** BHW conversation URL, lead DB row, conversation DB row, `bhwSession`, `aiEngine`
-**Outputs:** Reply posted on BHW; DB updated; Telegram alerts fired as needed
+**Outputs:** Reply posted on BHW; DB updated; Discord alerts fired as needed
 **Called by:** Inbox Monitor, Follow-Up System
 **Exports:** `handleConversation`, `sendConversationReply`
 
@@ -242,7 +250,7 @@ database   →  PostgreSQL via pg Pool; queries.js is the only DB interface
    - Creates `outreach_conversations` row, `outreach_dms` row
    - Marks target as `dm_sent`
    - Schedules 3 follow-ups in `outreach_follow_ups` (day 3, 7, 14)
-   - Sends Telegram preview/alert
+   - Sends Discord preview/alert
    - After every DM: runs `checkOutreachInbox` + `runOutreachFollowUps(limit=1)`
 5. After full batch: final `runOutreachFollowUps` sweep
 6. Sleeps until next daily window
@@ -293,6 +301,33 @@ database   →  PostgreSQL via pg Pool; queries.js is the only DB interface
 
 ---
 
+## Pipeline D — Niche Comment Scout
+
+### `src/engines/niche-scout.js` — Niche Comment Scout
+**Role:** Find today's non-marketplace BHW discussion posts and classify them for sales so humans can comment (signature / reputation). The bot never posts comments.
+
+**What it does:**
+1. Runs immediately after each successful Hire-a-Freelancer scrape tick (`NICHE_SCOUT_ENABLED=true`)
+2. Scrapes What's New listing (`NICHE_SCOUT_WHATS_NEW_URL`, default `/whats-new/posts/`) via anonymous `BHWScraper` browser
+3. Keeps posts dated today only; drops URLs containing `/marketplace/`
+4. Dedups against `niche_scout_posts.thread_id`
+5. Fetches OP title + body (capped by `NICHE_SCOUT_MAX_PER_RUN`)
+6. Classifies via Relay `chatgpt` using [`src/prompts/nicheScoutPrompt.js`](src/prompts/nicheScoutPrompt.js) (user-supplied niches/prompt)
+7. Inserts rows; Discord-notifies `fit` / `maybe` to `NICHE_SCOUT_CHANNEL_ID`
+
+**Inputs:** What's New URL, anonymous scraper, Relay API, niche scout prompt file  
+**Outputs:** `niche_scout_posts` rows; Discord niche/angle cards  
+**Called by:** `src/index.js` → `startScraperAndOutreachLoop()` after Hire-a-Freelancer scrape  
+**Exports:** `runNicheScout`
+
+### `src/services/relayClient.js` — Relay Client
+**Role:** Thin Node HTTP client for the Bitbash Relay AI gateway (`submit` / poll / `get_result` / `run`).
+
+### `src/prompts/nicheScoutPrompt.js` — Niche Scout Prompt
+**Role:** System prompt placeholder + `buildNicheScoutFullPrompt(posts)`. Replace `NICHE_SCOUT_SYSTEM_PROMPT` with the real niches prompt when ready.
+
+---
+
 ## AI Engine
 
 ### `src/services/aiEngine.js` — AI Engine
@@ -311,7 +346,7 @@ database   →  PostgreSQL via pg Pool; queries.js is the only DB interface
 | `generateDMReply(history, latestMsg, msgCount)` | Reply to a BHW DM | Conversation Engine |
 | `generateFollowUp(title, desc, days, prevMsgs)` | Follow-up text (tone shifts by day) | DM Engine (scheduling) |
 | `detectUrgencyAI(text)` | Two-stage keyword + AI urgency detector | DM Engine, Conversation Engine |
-| `scoreLeadHotness(title, desc, history)` | 1–10 hotness score for Telegram alert threshold | DM Engine |
+| `scoreLeadHotness(title, desc, history)` | 1–10 hotness score for Discord alert threshold | DM Engine |
 | `classifyThreadRelevance(title, snippet)` | Community thread relevance classifier | Community Commenter |
 | `generateCommunityComment(title, snippet, tips, category)` | Organic forum reply (no promo) | Community Commenter |
 | `generateThreadsOwnerOutreachDMAndFollowUps(title, desc, username)` | All 4 messages in one API call for Pipeline B | Threads Owner Outreach |
@@ -347,7 +382,7 @@ Defines Zeeshan / Bitbash identity:
 
 Defines Zeeshan as independent freelance developer:
 - Upwork Top Rated Plus, $150k+ earned, 5-star reviews
-- Telegram: `@zeeshanahmad4`
+- Telegram: `@@devpilot1`
 - 8+ years experience, specialises in automation, bots, SaaS
 - Tone: peer-to-peer developer, no agency framing
 
@@ -378,7 +413,7 @@ Defines Zeeshan as independent freelance developer:
 ## Notifications & Control
 
 ### `src/services/alerts.js` — Alerts Service
-**Role:** Telegram notification dispatcher — sends all bot events to Zeeshan's Telegram group.
+**Role:** Discord notification dispatcher — sends all bot events to Zeeshan's Discord channel.
 
 **Alert types:**
 
@@ -386,18 +421,20 @@ Defines Zeeshan as independent freelance developer:
 |---|---|
 | `sendRawAlert(text)` | Generic — used for scrape results, outreach previews, heartbeat |
 | `sendHandoffAlert(username, url, messages, reason)` | Conversation flagged for Zeeshan |
-| `sendTelegramRedirectAlert(username, url, lead, messages, reply)` | Lead sent to Telegram |
+| `sendLeadCTAAlert(username, url, lead, messages, reply)` | Lead directed to Telegram sales handle (@bitbashagency) — alerts Zeeshan to expect an inbound message |
 | `sendSessionExpiredAlert()` | BHW cookies expired |
 | `sendHotLeadAlert(lead, dmText)` | Lead hotness score >= 8 |
 | `sendCallReminder(username, url, urgentLine, context)` | Urgency detected |
 | `sendDailyReport(stats)` | 9 AM daily summary |
+| `sendPipelineCJobAlert(...)` | Pipeline C today-job card → `PIPELINE_C_CHANNEL_ID` |
+| `sendNicheScoutAlert(...)` | Pipeline D niche + angle card → `NICHE_SCOUT_CHANNEL_ID` |
 
-**Transport:** `sendToGroup()` from `telegramClient.js` (Telegraf)
+**Transport:** `sendToChannel()` / `sendToChannelById()` from `discordClient.js` (discord.js v14)
 
 ---
 
 ### `src/services/commandCenter.js` — Command Center
-**Role:** Two-way Telegram control panel — listens for slash commands in the Telegram group.
+**Role:** Two-way Discord control panel — listens for slash commands in the Discord channel.
 
 **Available commands:**
 
@@ -419,23 +456,24 @@ Defines Zeeshan as independent freelance developer:
 | `/pausefollowup <user>` | Stop chasing a specific lead |
 | `/help` | Command list |
 
-Slash commands only — no AI natural language parsing.
+Native Discord slash commands — registered via REST API on startup using `SlashCommandBuilder`.
 
-**Inputs:** Telegram group messages, DB queries, `botState`, `bhwSession`
-**Outputs:** Telegram group replies; DB mutations (convert, skip, pause follow-ups)
+**Inputs:** Discord interactions, DB queries, `botState`, `bhwSession`
+**Outputs:** Discord ephemeral replies; DB mutations (convert, skip, pause follow-ups)
 
 ---
 
-### `src/services/telegramClient.js` — Telegram Client
-**Role:** Shared Telegraf singleton used by alerts and command center.
+### `src/services/discordClient.js` — Discord Client
+**Role:** Shared discord.js v14 singleton used by alerts and command center.
 
 - No session file, no QR scan — stateless bot token auth
-- `initTelegram()` — starts Telegraf bot via long-polling
-- `sendToGroup(text)` — sends message (HTML parse mode) to the configured Telegram group
+- `initDiscord()` — starts Discord client via WebSocket gateway
+- `sendToChannel(text)` — sends message (Discord Markdown) to the configured channel; auto-splits at 2000-char limit
 - `onMessage(handler)` — registers message listener (used by command center)
-- `getBot()` — returns the Telegraf instance (for slash command registration)
-- `isReady()` / `getGroupId()` — state accessors
-- `markdownToHtml(text)` — internal: converts `*bold*` / `_italic_` / `` `code` `` to HTML
+- `getClient()` — returns the `Client` instance
+- `isReady()` / `getChannelId()` / `getBotId()` — state accessors
+- `registerSlashCommands(commands, guildId?)` — registers slash commands via REST API; guild-scoped (instant) if `guildId` provided, global (up to 1h) otherwise
+- `normalizeMarkdown(text)` — converts legacy `*bold*` (single asterisk) → `**bold**` (double asterisk) for Discord rendering
 
 ---
 
@@ -492,7 +530,8 @@ Level: `info` in production, `debug` if `LOG_LEVEL=debug`
 **Tables created/migrated:**
 `leads`, `dms`, `conversations`, `follow_ups`, `activity_log`,
 `niche_keywords`, `ai_logs`, `community_comments`,
-`outreach_targets`, `outreach_conversations`, `outreach_dms`, `outreach_follow_ups`
+`outreach_targets`, `outreach_conversations`, `outreach_dms`, `outreach_follow_ups`,
+`niche_scout_posts`
 
 ---
 
@@ -514,6 +553,7 @@ Level: `info` in production, `debug` if `LOG_LEVEL=debug`
 | Outreach convos | `createOutreachConversation`, `updateOutreachConversationUrl`, `updateOutreachConversationStatus` |
 | Outreach DMs | `createOutreachDM`, `getOutreachDMsByConversation` |
 | Outreach follow-ups | `createOutreachFollowUps`, `getDueOutreachFollowUps`, `markOutreachFollowUpSent`, `cancelOutreachFollowUps`, `getOutreachColdTargets` |
+| Niche Scout (D) | `getExistingNicheScoutThreadIds`, `createNicheScoutPost`, `markNicheScoutDiscordSent`, `getPendingNicheScoutDiscordSends` |
 
 ---
 
@@ -527,8 +567,10 @@ Key config groups:
 - `config.openai` — model, API key, log prompts
 - `config.bhw` — username, scrape intervals, base URL
 - `config.bot` — typing speeds, daily caps, follow-up days
-- `config.telegram` — bot token, group chat ID
+- `config.discord` — bot token, channel ID, guild ID, pipelineCChannelId, nicheScoutChannelId
 - `config.outreach` — OUTREACH_ENABLED, daily cap, active window, follow-up days
+- `config.nicheScout` — NICHE_SCOUT_ENABLED, whatsNewUrl, maxPerRun
+- `config.relay` — RELAY_API_KEY, RELAY_BASE_URL, RELAY_SERVICE_ID (chatgpt)
 
 ---
 
@@ -574,10 +616,13 @@ index.js (orchestrator)
   │       ├─► Outreach Follow-Up
   │       └─► Outreach Inbox ──────► aiEngine.generateThreadsOwnerOutreachReply
   │
+  ├─► Niche Scout (Pipeline D) ────► relayClient.run (chatgpt)
+  │                                ► alerts.sendNicheScoutAlert
+  │
   ├─► Command Center ──────────────► botState (pause/resume/dryRun)
   │                                ► DB queries (convert, skip, stats)
   │
-  ├─► alerts (Telegram) ───────────► telegramClient.sendToGroup
+  ├─► alerts (Discord) ────────────► discordClient.sendToChannel / sendToChannelById
   │
   └─► botState ────────────────────► all engines check isPaused() each tick
 ```
@@ -593,7 +638,7 @@ index.js (orchestrator)
 | GAP-05 | `aiEngine.js`, `queries.js` | DB column is `niche_match_score INTEGER`; AI returns `confidence FLOAT 0–1`. Migration needed. |
 | GAP-06 | `scraper/index.js`, `queries.js`, `commandCenter.js` | Leads with confidence 0.40–0.69 (tier='maybe') treated same as auto. Need manual review queue. |
 | GAP-10 | `utils/botState.js`, `database/init.js`, `queries.js` | `botState` pause is in-memory — lost on service restart. Should persist to a `bot_state` DB table. |
-| GAP-11 | `database/queries.js`, `services/alerts.js` | `sendDailyReport()` sends stats via Telegram but never writes them to the `daily_reports` table. |
+| GAP-11 | `database/queries.js`, `services/alerts.js` | `sendDailyReport()` sends stats via Discord but never writes them to the `daily_reports` table. |
 
 ### Resolved
 
@@ -605,14 +650,65 @@ index.js (orchestrator)
 
 ## Deployment
 
-**Production server:** Windows RDP at `38.242.198.21`
+**Production server:** Ubuntu 24.04 VPS at `161.97.118.235`
+**Access:** SSH as `root`
 **Process manager:** PM2 (`bhw-bot` process), config at `deploy/ecosystem.config.cjs`
-**Bot path:** `C:\bhw-bot\`
-**Deploy flow:** SCP changed files → `pm2 restart bhw-bot` (or `pm2 reload bhw-bot` for zero-downtime)
-**Logs:** `C:\bhw-bot\logs\` + `pm2 logs bhw-bot`
+**Bot path:** `/root/bhw-bot/`
+**Logs:** `/root/bhw-bot/logs/` + `pm2 logs bhw-bot`
+
+**Server environment (as of 2026-04-09):**
+- OS: Ubuntu 24.04 (kernel 6.8.0-106-generic)
+- Node.js: v22.22.2
+- npm: 10.9.7
+- PM2: 6.0.14
+- PostgreSQL: 16.13
+- Chromium: `/usr/bin/chromium-browser`
+- Xvfb: `/usr/bin/Xvfb` (virtual display for headless Puppeteer)
+
+**Database:**
+- Host: `localhost:5432`
+- Database: `bhw_bot`
+- User: `bhwbot`
+- Password: stored in `/root/bhw-bot/.env` on server
+
+**GitHub repo:** `https://github.com/zeeshana1233/bhw-outbound-bot.git`
+
+**Deploy flow — push code updates:**
+```bash
+ssh root@161.97.118.235
+cd /root/bhw-bot
+git pull origin main
+npm install --omit=dev
+pm2 restart bhw-bot --update-env
+pm2 save
+```
+
+**Or use the deploy script (from the server):**
+```bash
+bash /root/bhw-bot/deploy/deploy.sh --update
+```
+
+**SCP a single file from local machine:**
+```bash
+scp src/some/file.js root@161.97.118.235:/root/bhw-bot/src/some/file.js
+pm2 restart bhw-bot --update-env   # then SSH and restart
+```
+
+**Useful PM2 commands (run on server):**
+```bash
+pm2 status                         # process status
+pm2 logs bhw-bot                   # tail live logs
+pm2 logs bhw-bot --lines 50 --nostream   # last 50 lines
+pm2 restart bhw-bot --update-env   # restart with fresh .env
+pm2 stop bhw-bot                   # stop
+pm2 save                           # persist process list across reboots
+```
 
 **To enable Threads Owner Outreach on production:**
-Add `OUTREACH_ENABLED=true` to `.env` on the server and restart the service.
+Set `OUTREACH_ENABLED=true` in `/root/bhw-bot/.env` on the server and restart:
+```bash
+pm2 restart bhw-bot --update-env
+```
 
 **To enable Inbox Monitor + Follow-Up System:**
 Uncomment the three lines in `src/index.js`:
@@ -620,6 +716,15 @@ Uncomment the three lines in `src/index.js`:
 startInboxMonitor({ dryRun: DRY_RUN });
 startFollowUpSystem({ dryRun: DRY_RUN });
 ```
+
+**Known DB fix applied on 2026-04-09:**
+The `activity_log` table was missing `action_type` and `metadata` columns (schema predated `queries.js`).
+Fixed by running migrations directly and adding to `src/database/init.js`:
+```sql
+ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS action_type VARCHAR(100);
+ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS metadata JSONB;
+```
+These are now part of `initDatabase()` and will auto-run on any fresh deploy.
 
 ---
 
@@ -634,10 +739,11 @@ This project uses specialised OpenCode agents in `.opencode/agents/`. Each agent
 | scraper, Cloudflare, puppeteer, bhwSession, cookies, session, `save-cookies`, forum scrape | `scraper-dev.md` |
 | comment engine, DM engine, inbox monitor, follow-up, conversation engine, community commenter, Pipeline A, `src/index.js` | `pipeline-a-dev.md` |
 | threads owner outreach, outreach follow-up, outreach inbox, Pipeline B, `outreach_targets`, seed targets, `OUTREACH_ENABLED` | `pipeline-b-dev.md` |
+| niche scout, What's New, Pipeline D, `niche_scout_posts`, `NICHE_SCOUT_ENABLED`, Relay chatgpt, comment angle Discord | `pipeline-a-dev.md` (scout) / `discord-ops.md` (channel) |
 | AI, prompt, persona, `aiEngine`, `zeePersona`, `outreachPersona`, `generateCommentPitch`, `generateDMOutreach`, `generateDMReply`, `qualifyLead`, token, `gpt-4o-mini` | `ai-engine-dev.md` |
 | database, SQL, migration, schema, `queries.js`, `init.js`, table, column, `pg`, GAP-05, GAP-06, GAP-10, GAP-11 | `db-admin.md` |
-| Telegram, alerts, command center, Telegram group, `sendToGroup`, `commandCenter`, `telegramClient`, bot token, group chat ID | `telegram-ops.md` |
-| deploy, PM2, SCP, Windows, RDP, `.env`, service restart, production, `ecosystem.config` | `deployer.md` |
+| Discord, alerts, command center, Discord channel, `sendToChannel`, `commandCenter`, `discordClient`, bot token, channel ID, guild ID | `discord-ops.md` |
+| deploy, PM2, SCP, SSH, Ubuntu, `.env`, service restart, production, `ecosystem.config` | `deployer.md` |
 | code review, PR review, refactor, test, quality, lint | `code-reviewer.md` |
 
 ### Auto-Routing Rule

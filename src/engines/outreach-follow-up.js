@@ -16,7 +16,7 @@
  */
 
 import logger                       from '../utils/logger.js';
-import { sleep, randomDelay }       from '../utils/helpers.js';
+import { sleep, randomDelay, sanitizeBHWMessage } from '../utils/helpers.js';
 import bhwSession                   from '../utils/bhwSession.js';
 import alerts                       from '../services/alerts.js';
 import { logActivity }              from '../database/queries.js';
@@ -52,60 +52,174 @@ async function sendFollowUpMessage(bhwConversationUrl, messageText, dryRun = fal
 
   try {
     await bhwSession.navigateTo(bhwConversationUrl);
-    await sleep(randomDelay(1500, 3000));
+    await sleep(randomDelay(2000, 4000));
 
-    // Click reply box — Froala editor
-    const editorSelectors = [
+    // Detect error page
+    const pageTitle = await page.title().catch(() => '');
+    if (pageTitle.toLowerCase().includes('oops') || pageTitle.toLowerCase().includes('error')) {
+      return { success: false, error: `BHW error page: "${pageTitle}"` };
+    }
+
+    // ── Locate Froala editor ─────────────────────────────────────────────────
+    const EDITOR_SELECTORS = [
       '.fr-element[contenteditable="true"]',
+      'div[data-placeholder][contenteditable="true"]',
       '.messageTextEditor [contenteditable="true"]',
       'div[contenteditable="true"]',
+      'textarea[name="message"]',
+      '#ctrl_message',
     ];
-    let editorFound = false;
-    for (const sel of editorSelectors) {
-      const el = await page.$(sel);
-      if (el) {
-        await page.evaluate((s) => {
-          const e = document.querySelector(s);
-          if (e) e.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }, sel);
-        await sleep(randomDelay(600, 1200));
-        await el.click();
-        editorFound = true;
-        break;
+
+    let bodySelector = null;
+    for (const sel of EDITOR_SELECTORS) {
+      const found = await page.$(sel);
+      if (found) { bodySelector = sel; break; }
+    }
+
+    // Scroll to bottom and retry if not found yet
+    if (!bodySelector) {
+      await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight }));
+      await sleep(1500);
+      for (const sel of EDITOR_SELECTORS) {
+        const found = await page.$(sel);
+        if (found) { bodySelector = sel; break; }
       }
     }
-    if (!editorFound) throw new Error('Reply editor not found on conversation page');
 
-    await sleep(randomDelay(400, 800));
+    if (!bodySelector) throw new Error('Reply editor not found on conversation page');
 
-    // Type message with human simulation
-    for (const char of messageText) {
+    // ── Activate Froala editor via DOM (same as sendOutreachDM) ─────────────
+    await page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return;
+      el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      el.focus();
+      ['mouseenter', 'mousedown', 'mouseup', 'click'].forEach(type =>
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }))
+      );
+      el.innerHTML = '<p><br></p>';
+      el.dispatchEvent(new InputEvent('input',  { bubbles: true }));
+      el.dispatchEvent(new InputEvent('change', { bubbles: true }));
+    }, bodySelector);
+    await sleep(randomDelay(500, 900));
+
+    await page.click(bodySelector).catch(() => {});
+    await page.focus(bodySelector);
+    await sleep(randomDelay(300, 500));
+
+    // Clear any pre-filled content
+    await page.keyboard.down('Control');
+    await page.keyboard.press('a');
+    await page.keyboard.up('Control');
+    await page.keyboard.press('Delete');
+    await sleep(randomDelay(200, 400));
+
+    await page.click(bodySelector).catch(() => {});
+    await sleep(randomDelay(200, 400));
+
+    // ── Type message with human simulation ───────────────────────────────────
+    const cleanText = sanitizeBHWMessage(messageText);
+    const TYPO_PROB = 0.03;
+    const TYPO_MAP  = {
+      a:'s',b:'v',c:'x',d:'s',e:'w',f:'g',g:'h',h:'j',i:'u',j:'k',k:'l',
+      l:'k',m:'n',n:'m',o:'p',p:'o',q:'w',r:'e',s:'a',t:'r',u:'y',v:'b',
+      w:'e',x:'z',y:'u',z:'x',
+    };
+    let wordCount = 0;
+    let nextPauseAt = randomDelay(8, 15);
+    for (let i = 0; i < cleanText.length; i++) {
+      const char = cleanText[i];
+      if (char === ' ') {
+        wordCount++;
+        if (wordCount >= nextPauseAt) {
+          await sleep(randomDelay(400, 900));
+          wordCount   = 0;
+          nextPauseAt = randomDelay(8, 15);
+        }
+      }
+      if (TYPO_PROB > Math.random() && char.toLowerCase() in TYPO_MAP && char !== ' ' && char !== '\n') {
+        await page.keyboard.type(TYPO_MAP[char.toLowerCase()]);
+        await sleep(randomDelay(80, 180));
+        await page.keyboard.down('Backspace');
+        await sleep(randomDelay(30, 80));
+        await page.keyboard.up('Backspace');
+        await sleep(randomDelay(100, 250));
+      }
       await page.keyboard.type(char);
       await sleep(randomDelay(45, 130));
+      if ('.!?,;:'.includes(char)) await sleep(randomDelay(150, 400));
     }
+    await page.keyboard.up('Shift').catch(() => {});
+    await page.keyboard.up('Control').catch(() => {});
 
-    await sleep(randomDelay(1500, 3500));
-
-    // Submit
-    const submitSelectors = [
-      'button.button--primary[type="submit"]',
-      'button[type="submit"]',
-    ];
-    let submitted = false;
-    for (const sel of submitSelectors) {
-      const btn = await page.$(sel);
-      if (btn) {
-        await btn.scrollIntoView().catch(() => {});
-        await sleep(randomDelay(300, 700));
-        await btn.click();
-        submitted = true;
-        break;
+    // ── Sync Froala → hidden textarea ────────────────────────────────────────
+    const syncResult = await page.evaluate((sel, text) => {
+      const ed = document.querySelector(sel);
+      if (!ed) return 'no_editor';
+      if (!ed.textContent.trim()) {
+        ed.innerHTML = '<p>' + text.replace(/\n/g, '<br>') + '</p>';
       }
-    }
-    if (!submitted) throw new Error('Submit button not found');
+      const html = ed.innerHTML;
+      const form = ed.closest('form');
+      if (!form) return 'no_form';
+      let synced = 0;
+      form.querySelectorAll('textarea, input[type="hidden"]').forEach(el => {
+        const name = (el.name || el.id || '').toLowerCase();
+        if (name.includes('message') || name.includes('body') || name.includes('content')) {
+          el.value = html;
+          el.dispatchEvent(new Event('input',  { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          synced++;
+        }
+      });
+      form.querySelectorAll('textarea').forEach(ta => {
+        if (getComputedStyle(ta).display === 'none' || ta.hidden) {
+          ta.value = html; synced++;
+        }
+      });
+      return 'synced:' + synced;
+    }, bodySelector, cleanText);
+    logger.info(`  [FOLLOW-UP] Editor sync: ${syncResult}`);
 
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 12000 }).catch(() => {});
-    await sleep(randomDelay(800, 2000));
+    await sleep(randomDelay(1500, 3000));
+
+    // ── Submit via DOM dispatch ───────────────────────────────────────────────
+    await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+    await sleep(randomDelay(800, 1500));
+
+    const submitResult = await page.evaluate((sel) => {
+      const ed   = document.querySelector(sel);
+      let form   = ed ? ed.closest('form') : null;
+      if (!form) {
+        form = document.querySelector('form[action*="conversation"]') ||
+               document.querySelector('form[action*="reply"]') ||
+               document.querySelector('form');
+      }
+      const btn = form
+        ? (form.querySelector('[data-xf-click="submit"]') ||
+           form.querySelector('button[type="submit"]') ||
+           form.querySelector('input[type="submit"]'))
+        : (document.querySelector('button[data-xf-click="submit"]') ||
+           document.querySelector('button.button--primary[type="submit"]'));
+
+      if (btn) {
+        btn.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        const opts = { bubbles: true, cancelable: true, view: window };
+        ['mouseenter','mousemove','mousedown','mouseup','click'].forEach(t =>
+          btn.dispatchEvent(new MouseEvent(t, opts))
+        );
+        return 'btn_events:' + btn.textContent.trim().slice(0, 30);
+      }
+      if (form) {
+        try { form.requestSubmit(); return 'form_requestSubmit'; }
+        catch (e) { form.submit(); return 'form_submit'; }
+      }
+      return 'nothing_found';
+    }, bodySelector);
+    logger.info(`  [FOLLOW-UP] Submit: ${submitResult}`);
+
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+    await sleep(randomDelay(2000, 4000));
 
     return { success: true };
   } catch (err) {
@@ -118,7 +232,7 @@ async function sendFollowUpMessage(bhwConversationUrl, messageText, dryRun = fal
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function runOutreachFollowUps(opts = {}) {
-  const dryRun = opts.dryRun !== undefined ? opts.dryRun : (process.env.DRY_RUN !== 'false');
+  const dryRun = opts.dryRun !== undefined ? opts.dryRun : (process.env.DRY_RUN === 'true');
   const limit  = opts.limit  !== undefined ? opts.limit  : Infinity; // pass limit:1 for per-DM mode
 
   logger.info(`${TAG} Running follow-ups check… (limit: ${limit === Infinity ? 'all' : limit})`);

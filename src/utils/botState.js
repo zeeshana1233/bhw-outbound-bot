@@ -12,7 +12,7 @@
  * Usage:
  *   import { botState } from '../utils/botState.js';
  *   if (botState.isPaused()) return;          // guard at top of each tick
- *   botState.pause('manual via WhatsApp');    // called from commandCenter
+  *   botState.pause('manual via Discord');    // called from commandCenter
  *   botState.resume();
  */
 

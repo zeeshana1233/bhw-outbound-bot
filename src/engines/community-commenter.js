@@ -17,7 +17,7 @@
  * 10. Per-run limit: max 3 comments — keeps activity natural
  *
  * ── BHW POLICY ──────────────────────────────────────────────────────────────
- *  ✗ No promotion, no upselling, no Telegram link
+ *  ✗ No promotion, no upselling, no external contact links
  *  ✗ No "contact me", "DM me", "check my profile"
  *  ✓ Purely helpful replies — the signature banner does the selling passively
  *  ✓ Reads like a knowledgeable community member, not a vendor

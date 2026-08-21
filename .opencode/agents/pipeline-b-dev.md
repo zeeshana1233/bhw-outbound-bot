@@ -19,7 +19,7 @@ Senior bot engineer who owns Pipeline B — the proactive outreach module that D
 - `src/engines/threads-owner-outreach.js` — main Pipeline B loop: 16-hour active window scheduler, picks 5 targets/day FIFO, scrapes thread, generates DM + 3 follow-ups in one AI call, sends DM, schedules follow-ups, calls outreach inbox + follow-up runner after each send
 - `src/engines/outreach-follow-up.js` — `runOutreachFollowUps(opts)`: fetches due `outreach_follow_ups` rows, sends pre-written text, marks sent, detects cold targets
 - `src/engines/outreach-inbox.js` — `checkOutreachInbox()`: scans BHW conversations for unread messages from outreach targets, generates contextual reply via AI, cancels pending follow-ups when target replies
-- `src/services/outreachPersona.js` — Zeeshan persona for Pipeline B: independent freelancer, Upwork Top Rated Plus, $150k+ earned, Telegram `@zeeshanahmad4`. NOT the agency persona.
+- `src/services/outreachPersona.js` — Zeeshan persona for Pipeline B: independent freelancer, Upwork Top Rated Plus, $150k+ earned, sales CTA Telegram `@@devpilot1`. NOT the agency persona.
 - `scripts/seed-outreach-targets.js` — one-time CSV importer: `node scripts/seed-outreach-targets.js targets.csv`
 - `targets.csv` — source CSV of BHW thread URLs to contact
 - `database/outreach-schema.sql` — 4 isolated tables: `outreach_targets`, `outreach_conversations`, `outreach_dms`, `outreach_follow_ups`
@@ -36,7 +36,7 @@ Senior bot engineer who owns Pipeline B — the proactive outreach module that D
 - **Inbox separation:** `checkOutreachInbox()` only processes usernames present in `outreach_targets` table — main `inbox-monitor.js` handles everything else — no overlap
 - **Follow-up cancellation:** When an outreach target replies, `cancelOutreachFollowUps(targetId)` immediately cancels all pending follow-ups for that target
 - **Cold target detection:** All 3 follow-ups sent + no reply + 7 days since last contact → `markOutreachTargetCold(targetId)`
-- **Persona difference (CRITICAL):** Pipeline B uses `outreachPersona.buildOutreachSystemPrompt()` — Zeeshan as independent dev, Telegram `@zeeshanahmad4`. Pipeline A uses `zeePersona.buildSystemPrompt()` — Bitbash agency, Telegram `@bitbashagency`. Never mix these.
+- **Persona difference (CRITICAL):** Pipeline B uses `outreachPersona.buildOutreachSystemPrompt()` — Zeeshan as independent dev, sales CTA `@@devpilot1` on Telegram. Pipeline A uses `zeePersona.buildSystemPrompt()` — Bitbash agency, sales CTA `@bitbashagency` on Telegram. Never mix these.
 - **Per-DM flow:** After each DM sent → `checkOutreachInbox()` + `runOutreachFollowUps({ limit: 1 })` → final full `runOutreachFollowUps()` sweep after batch completes
 - **Shared session:** Uses the same `bhwSession` singleton as Pipeline A — no second browser, no second login
 - **Env vars:** `OUTREACH_ENABLED`, `OUTREACH_DAILY_CAP`, `OUTREACH_ACTIVE_START_UTC`, `OUTREACH_ACTIVE_END_UTC`, `OUTREACH_WINDOW_JITTER_MINUTES`, `OUTREACH_MIN_GAP_MINUTES`, `OUTREACH_FOLLOWUP1_DAYS`, `OUTREACH_FOLLOWUP2_DAYS`, `OUTREACH_FOLLOWUP3_DAYS`

@@ -2,6 +2,38 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+/**
+ * Parse SCRAPER_PROXY_URL into puppeteer-real-browser proxy options.
+ * Accepts:
+ *   user:pass@host:port
+ *   http://user:pass@host:port
+ *   host:port  (no auth)
+ * Returns null if unset / invalid. Never log the password.
+ */
+function parseScraperProxy(raw) {
+  if (!raw || !String(raw).trim()) return null;
+  let s = String(raw).trim();
+  s = s.replace(/^https?:\/\//i, '');
+  const at = s.lastIndexOf('@');
+  let user = undefined;
+  let pass = undefined;
+  let hostPort = s;
+  if (at !== -1) {
+    const creds = s.slice(0, at);
+    hostPort = s.slice(at + 1);
+    const colon = creds.indexOf(':');
+    if (colon === -1) return null;
+    user = creds.slice(0, colon);
+    pass = creds.slice(colon + 1);
+  }
+  const hpColon = hostPort.lastIndexOf(':');
+  if (hpColon === -1) return null;
+  const host = hostPort.slice(0, hpColon);
+  const port = parseInt(hostPort.slice(hpColon + 1), 10);
+  if (!host || !Number.isFinite(port)) return null;
+  return { host, port, username: user, password: pass };
+}
+
 export const config = {
   database: {
     host: process.env.DB_HOST || 'localhost',
@@ -29,19 +61,39 @@ export const config = {
     scrapeIntervalMax: parseInt(process.env.BHW_SCRAPE_INTERVAL_MAX) || 2400000,  // 40 minutes
     inboxCheckInterval: parseInt(process.env.BHW_INBOX_CHECK_INTERVAL) || 3600000, // 1 hour
     baseUrl: 'https://www.blackhatworld.com/forums/hire-a-freelancer.76/',
+    // Anonymous scraper residential proxy (Pipeline C). null = direct VPS IP.
+    scraperProxy: parseScraperProxy(process.env.SCRAPER_PROXY_URL),
   },
   
   discord: {
-    botToken:          process.env.DISCORD_BOT_TOKEN,
-    channelId:         process.env.DISCORD_CHANNEL_ID          || '',
-    guildId:           process.env.DISCORD_GUILD_ID             || '',
-    pipelineCChannelId: process.env.PIPELINE_C_CHANNEL_ID      || '',
+    botToken:            process.env.DISCORD_BOT_TOKEN,
+    channelId:           process.env.DISCORD_CHANNEL_ID          || '',
+    guildId:             process.env.DISCORD_GUILD_ID             || '',
+    pipelineCChannelId:  process.env.PIPELINE_C_CHANNEL_ID      || '',
+    nicheScoutChannelId: process.env.NICHE_SCOUT_CHANNEL_ID     || '',
   },
 
   // Pipeline C only — anonymous job notifier. When true: scrape + Discord job
   // cards only. No comment/DM outreach, no Threads Owner Outreach, no login.
   // Default true so A/B cannot re-enable by accident.
   pipelineCOnly: process.env.PIPELINE_C_ONLY !== 'false',
+
+  // ── Pipeline D — Niche Comment Scout ────────────────────────────────────
+  // After Hire-a-Freelancer scrape: What's New → today + non-marketplace →
+  // Relay chatgpt classify → Discord for sales (no bot commenting).
+  nicheScout: {
+    enabled:     process.env.NICHE_SCOUT_ENABLED === 'true',
+    whatsNewUrl: process.env.NICHE_SCOUT_WHATS_NEW_URL
+      || 'https://www.blackhatworld.com/whats-new/posts/',
+    maxPerRun:   parseInt(process.env.NICHE_SCOUT_MAX_PER_RUN) || 25,
+  },
+
+  // Relay AI Browser Automation Gateway (used by Niche Scout)
+  relay: {
+    apiKey:    process.env.RELAY_API_KEY || '',
+    baseUrl:   (process.env.RELAY_BASE_URL || 'https://vmi3391996.tail98bcdc.ts.net').replace(/\/$/, ''),
+    serviceId: process.env.RELAY_SERVICE_ID || 'chatgpt',
+  },
 
   bot: {
     minDelay: parseInt(process.env.MIN_DELAY_MS) || 2000,

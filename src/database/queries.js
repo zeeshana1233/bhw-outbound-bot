@@ -446,7 +446,7 @@ export async function logActivity(activityData) {
 // =====================================================
 
 /**
- * Collect today's activity stats for the daily WhatsApp report.
+ * Collect today's activity stats for the daily Discord report.
  * All counts are scoped to the calendar day in the DB server's timezone.
  *
  * @param {Date} [date=new Date()] - The day to report on
@@ -642,7 +642,7 @@ export async function logAICall({
 
 /**
  * Aggregate AI usage stats over the last N days.
- * Used by the /stats Telegram command.
+ * Used by the /stats Discord command.
  */
 export async function getAIStats(days = 7) {
   const sql = `
@@ -1111,4 +1111,185 @@ export async function getOutreachProgress() {
     cold:    parseInt(r.cold),
     skipped: parseInt(r.skipped),
   };
+}
+
+// =====================================================
+// PIPELINE D — NICHE COMMENT SCOUT
+// =====================================================
+
+/**
+ * Batch-check which thread IDs already exist in niche_scout_posts.
+ * @param {string[]} threadIds
+ * @returns {Promise<string[]>} IDs that are already stored
+ */
+export async function getExistingNicheScoutThreadIds(threadIds) {
+  if (!threadIds || threadIds.length === 0) return [];
+  const sql = `
+    SELECT thread_id FROM niche_scout_posts
+    WHERE thread_id = ANY($1)
+  `;
+  const result = await query(sql, [threadIds]);
+  return result.rows.map(r => r.thread_id);
+}
+
+/**
+ * Insert a classified niche-scout post (dedup via UNIQUE thread_id).
+ * @returns {Promise<object|null>} inserted row, or existing row on conflict
+ */
+export async function createNicheScoutPost(data) {
+  const sql = `
+    INSERT INTO niche_scout_posts (
+      thread_id, thread_url, title, poster_username, body, posted_at,
+      niche, verdict, comment_angle, raw_ai_response
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    ON CONFLICT (thread_id) DO NOTHING
+    RETURNING *
+  `;
+  const values = [
+    data.threadId,
+    data.threadUrl,
+    data.title,
+    data.posterUsername || null,
+    data.body || null,
+    data.postedAt || null,
+    data.niche || null,
+    data.verdict || null,
+    data.commentAngle || null,
+    data.rawAiResponse ? JSON.stringify(data.rawAiResponse) : null,
+  ];
+  const result = await query(sql, values);
+  if (result.rows[0]) return result.rows[0];
+  const existing = await query(
+    'SELECT * FROM niche_scout_posts WHERE thread_id = $1',
+    [data.threadId]
+  );
+  return existing.rows[0] || null;
+}
+
+/**
+ * Mark a niche-scout post as delivered to Discord.
+ */
+export async function markNicheScoutDiscordSent(id) {
+  const sql = `
+    UPDATE niche_scout_posts
+    SET discord_sent = TRUE, discord_sent_at = CURRENT_TIMESTAMP
+    WHERE id = $1
+    RETURNING *
+  `;
+  const result = await query(sql, [id]);
+  return result.rows[0];
+}
+
+/**
+ * Posts that were classified but Discord send failed — retry candidates.
+ */
+export async function getPendingNicheScoutDiscordSends(limit = 20) {
+  const sql = `
+    SELECT * FROM niche_scout_posts
+    WHERE discord_sent = FALSE
+      AND LOWER(COALESCE(verdict, '')) IN ('fit', 'maybe')
+    ORDER BY created_at ASC
+    LIMIT $1
+  `;
+  const result = await query(sql, [limit]);
+  return result.rows;
+}
+
+/**
+ * Niche Scout counts for a calendar day (DB server date).
+ * Returns { date, total, fit, maybe, skip, byNiche: { scraping: {fit, maybe}, ... } }
+ */
+export async function getNicheScoutDayStats(date = new Date()) {
+  const day = date.toISOString().slice(0, 10);
+
+  const sql = `
+    SELECT
+      LOWER(COALESCE(NULLIF(TRIM(niche), ''), 'none')) AS niche,
+      LOWER(COALESCE(verdict, 'skip')) AS verdict,
+      COUNT(*)::int AS cnt
+    FROM niche_scout_posts
+    WHERE DATE(created_at) = $1
+    GROUP BY 1, 2
+  `;
+  const { rows } = await query(sql, [day]);
+
+  const byNiche = {};
+  let fit = 0;
+  let maybe = 0;
+  let skip = 0;
+  let total = 0;
+
+  for (const r of rows) {
+    const n = r.niche;
+    const v = r.verdict;
+    const c = r.cnt;
+    total += c;
+    if (v === 'fit') fit += c;
+    else if (v === 'maybe') maybe += c;
+    else skip += c;
+
+    if (!byNiche[n]) byNiche[n] = { fit: 0, maybe: 0, skip: 0, total: 0 };
+    if (v === 'fit' || v === 'maybe' || v === 'skip') byNiche[n][v] += c;
+    else byNiche[n].skip += c;
+    byNiche[n].total += c;
+  }
+
+  return { date: day, total, fit, maybe, skip, byNiche };
+}
+
+/**
+ * Niche Scout counts for the last `days` days (including today).
+ * Same shape as getNicheScoutDayStats but aggregated over the window.
+ */
+export async function getNicheScoutWeekStats(days = 7) {
+  const sql = `
+    SELECT
+      LOWER(COALESCE(NULLIF(TRIM(niche), ''), 'none')) AS niche,
+      LOWER(COALESCE(verdict, 'skip')) AS verdict,
+      COUNT(*)::int AS cnt
+    FROM niche_scout_posts
+    WHERE created_at >= (CURRENT_DATE - ($1::int - 1) * INTERVAL '1 day')
+    GROUP BY 1, 2
+  `;
+  const { rows } = await query(sql, [days]);
+
+  const byNiche = {};
+  let fit = 0;
+  let maybe = 0;
+  let skip = 0;
+  let total = 0;
+
+  for (const r of rows) {
+    const n = r.niche;
+    const v = r.verdict;
+    const c = r.cnt;
+    total += c;
+    if (v === 'fit') fit += c;
+    else if (v === 'maybe') maybe += c;
+    else skip += c;
+
+    if (!byNiche[n]) byNiche[n] = { fit: 0, maybe: 0, skip: 0, total: 0 };
+    if (v === 'fit' || v === 'maybe' || v === 'skip') byNiche[n][v] += c;
+    else byNiche[n].skip += c;
+    byNiche[n].total += c;
+  }
+
+  return { days, total, fit, maybe, skip, byNiche };
+}
+
+/**
+ * Posts marked skip (niche did not match) for a calendar day — for EOD missed list.
+ */
+export async function getNicheScoutSkippedPosts(date = new Date(), limit = 100) {
+  const day = date.toISOString().slice(0, 10);
+  const sql = `
+    SELECT title, thread_url, poster_username, niche, created_at
+    FROM niche_scout_posts
+    WHERE DATE(created_at) = $1
+      AND LOWER(COALESCE(verdict, '')) = 'skip'
+    ORDER BY created_at ASC
+    LIMIT $2
+  `;
+  const { rows } = await query(sql, [day, limit]);
+  return rows;
 }

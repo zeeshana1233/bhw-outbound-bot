@@ -276,7 +276,7 @@ export async function checkOutreachInbox(opts = {}) {
           `From: @${otherUsername}\n` +
           `Thread: "${(target.title || '').slice(0, 80)}"\n` +
           `Their message: "${theirLastMessage.slice(0, 100)}…"\n` +
-          `Our reply: sent ✅ (Telegram CTA included)` +
+          `Our reply: sent ✅ (CTA sent)` +
           (dryRun ? '\n⚠️ DRY RUN' : '')
         ).catch(() => {});
 

@@ -26,14 +26,19 @@ export async function initDatabase() {
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS tier VARCHAR(20);`);
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS pitch_angle TEXT;`);
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS commented BOOLEAN DEFAULT FALSE;`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS commented_at TIMESTAMPTZ;`);
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS dm_sent BOOLEAN DEFAULT FALSE;`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS dm_sent_at TIMESTAMPTZ;`);
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS status VARCHAR(30) DEFAULT 'new';`);
     await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS converted BOOLEAN DEFAULT FALSE;`);
+    await client.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS discovered_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;`);
 
     // activity_log table — columns missing from initial schema
     await client.query(`ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS description TEXT;`);
     await client.query(`ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'success';`);
     await client.query(`ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS error_message TEXT;`);
+    await client.query(`ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS action_type VARCHAR(100);`);
+    await client.query(`ALTER TABLE activity_log ADD COLUMN IF NOT EXISTS metadata JSONB;`);
 
     // dms table — AI tracing columns
     await client.query(`ALTER TABLE dms ADD COLUMN IF NOT EXISTS generated_by TEXT;`);
@@ -182,6 +187,30 @@ export async function initDatabase() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_outreach_fups_target    ON outreach_follow_ups(target_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_outreach_fups_status    ON outreach_follow_ups(status);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_outreach_fups_scheduled ON outreach_follow_ups(scheduled_for);`);
+
+    // ── PIPELINE D — Niche Comment Scout ────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS niche_scout_posts (
+        id                SERIAL PRIMARY KEY,
+        thread_id         VARCHAR(50) UNIQUE NOT NULL,
+        thread_url        TEXT NOT NULL,
+        title             TEXT,
+        poster_username   VARCHAR(100),
+        body              TEXT,
+        posted_at         TIMESTAMPTZ,
+        niche             VARCHAR(100),
+        verdict           TEXT,
+        comment_angle     TEXT,
+        raw_ai_response   JSONB,
+        discord_sent      BOOLEAN DEFAULT FALSE,
+        discord_sent_at   TIMESTAMPTZ,
+        created_at        TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_niche_scout_discord
+      ON niche_scout_posts(discord_sent) WHERE discord_sent = FALSE;
+    `);
 
     client.release();
     return true;

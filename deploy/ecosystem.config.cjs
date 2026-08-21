@@ -14,6 +14,7 @@ module.exports = {
       },
       env_production: {
         NODE_ENV: 'production',
+        DISPLAY: ':99',           // Xvfb virtual display for headless Puppeteer on Linux
       },
 
       // Restart policy

@@ -36,7 +36,7 @@ Senior browser-automation engineer who owns the BHW forum scraper and the shared
 - **Top N threads:** Scraper fetches top 10 thread cards per run
 - **Anti-bot pacing:** Random delays between requests; scroll simulation; no instant navigation
 - **Singleton reason:** ALL engines share ONE browser window — multiple simultaneous BHW logins from the same IP trigger security flags
-- **Chrome path:** `BHW_CHROME_PROFILE_PATH` env var — set to bundled Chromium for Testing to avoid conflict with WhatsApp's Chrome instance
+- **Chrome path:** `BHW_CHROME_PROFILE_PATH` env var — set to bundled Chromium for Testing
 
 ## Patterns to Follow
 - Never fall back to full URL as `thread_id` — if `extractThreadId()` returns null, skip the thread entirely (do not store with URL as ID)
@@ -52,5 +52,5 @@ Senior browser-automation engineer who owns the BHW forum scraper and the shared
 - **`poster_username` comes back as `'unknown'` or null:** `extractThreadId()` failed on a `/seo/` URL path, causing the username extraction fallback to fail. Fix: verify the regex in `helpers.js` matches both `/threads/` and `/seo/` paths: `(?:threads|seo)\/[^/]+\.(\d+)\/?`. Also check that `.message-name a.username` selector still exists on the thread page DOM.
 - **Duplicate threads in DB (same thread stored twice):** Old thread_ids stored as full URLs (legacy bug). Fix: run the normalization query to convert legacy URL-format thread_ids to numeric IDs; ensure `getExistingThreadIds()` uses PostgreSQL regexp normalization to match both formats.
 - **Session expired mid-run:** `ensureAuthenticated()` returns false; bot throws `SESSION EXPIRED`. Fix: run `node save-cookies.js` on the production server to get fresh cookies, then SCP the new `bhw-cookies.json` to `C:\bhw-bot\bhw-cookies.json` and restart the service.
-- **Single-instance Chrome conflict:** `BHW_CHROME_PROFILE_PATH` pointing to the system Chrome that WhatsApp already has open causes `"Target closed"` errors. Fix: set `BHW_CHROME_PROFILE_PATH` to the bundled Chromium for Testing path, not the system Chrome.
+- **Single-instance Chrome conflict:** Two browser instances using the same Chrome profile can cause `"Target closed"` errors. Fix: set `BHW_CHROME_PROFILE_PATH` to the bundled Chromium for Testing path, not the system Chrome.
 - **`extractThreadId()` returns null for valid threads:** BHW occasionally uses other URL formats during A/B tests. Fix: log the raw URL and add a new regex branch; never silently store null as thread_id.

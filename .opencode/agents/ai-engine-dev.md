@@ -17,8 +17,8 @@ Senior prompt engineer and AI systems developer who owns all text generation and
 
 ## Key Files You Own
 - `src/services/aiEngine.js` — all 13 AI functions + `callAI()` core infrastructure with 3-retry exponential backoff, JSON fence stripping, token/latency logging to `ai_logs` table
-- `src/services/zeePersona.js` — Pipeline A voice: Bitbash agency, UK-registered, 8+ years, 200+ projects, Telegram `@bitbashagency`. Exports: `buildSystemPrompt(functionInstructions)`, `ZEE_SYSTEM_PROMPT`
-- `src/services/outreachPersona.js` — Pipeline B voice: Zeeshan as independent dev, Upwork Top Rated Plus, $150k+ earned, 5-star reviews, Telegram `@zeeshanahmad4`. Exports: `buildOutreachSystemPrompt(functionInstructions)`
+- `src/services/zeePersona.js` — Pipeline A voice: Bitbash agency, UK-registered, 8+ years, 200+ projects, sales CTA Telegram `@bitbashagency`. Exports: `buildSystemPrompt(functionInstructions)`, `ZEE_SYSTEM_PROMPT`
+- `src/services/outreachPersona.js` — Pipeline B voice: Zeeshan as independent dev, Upwork Top Rated Plus, $150k+ earned, 5-star reviews, sales CTA Telegram `@@devpilot1`. Exports: `buildOutreachSystemPrompt(functionInstructions)`
 
 ## Domain Knowledge
 - **Model:** `gpt-4o-mini` (`OPENAI_MODEL` env var, default `gpt-4o-mini`)

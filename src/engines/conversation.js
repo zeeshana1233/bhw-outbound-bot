@@ -277,12 +277,12 @@ export async function handleConversation(convUrl, otherUsername, lead, dbConvId,
   // Send the clean reply (no [HANDOFF] tag) regardless of handoff status
   await sendConversationReply(page, replyText);
 
-  // Telegram redirect detection — did this reply push the lead to Telegram?
+  // CTA redirect detection — did this reply push the lead to Telegram (@bitbashagency)?
   const mentionsTelegram = /@bitbashagency|t\.me\/bitbashagency/i.test(replyText);
   if (mentionsTelegram) {
-    logger.info(`  📲 Telegram redirect sent to @${otherUsername} — alerting Zeeshan`);
-    alerts.sendTelegramRedirectAlert(otherUsername, convUrl, lead, messages, replyText)
-      .catch(err => logger.error('  Telegram redirect alert failed:', err.message));
+    logger.info(`  📲 CTA redirect sent to @${otherUsername} — alerting Zeeshan`);
+    alerts.sendLeadCTAAlert(otherUsername, convUrl, lead, messages, replyText)
+      .catch(err => logger.error('  CTA redirect alert failed:', err.message));
   }
 
   // DB update for the reply we just sent
@@ -319,11 +319,11 @@ export async function handleConversation(convUrl, otherUsername, lead, dbConvId,
       }
     }
 
-    // 2. Alert Zeeshan on WhatsApp
+    // 2. Alert Zeeshan on Discord
     try {
       await alerts.sendHandoffAlert(otherUsername, convUrl, messages, handoffReason);
     } catch (alertErr) {
-      logger.error('  WhatsApp alert failed:', alertErr.message);
+        logger.error('  Discord alert failed:', alertErr.message);
     }
 
     // 3. Activity log

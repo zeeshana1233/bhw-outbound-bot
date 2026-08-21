@@ -89,7 +89,14 @@ class BHWScraper {
     // This scraper browser is ALWAYS a fresh anonymous session — no cookies,
     // no login. It never touches the bhwSession singleton (app_pilot profile).
     // BHW forum listing is fully public — no authentication needed to read it.
-    const connectPromise = connect({
+    const proxy = config.bhw.scraperProxy;
+    if (proxy) {
+      logger.info(`Using residential scraper proxy → ${proxy.host}:${proxy.port} (auth: ${proxy.username ? 'yes' : 'no'})`);
+    } else {
+      logger.warn('No SCRAPER_PROXY_URL set — scraping via direct VPS IP (higher CF risk)');
+    }
+
+    const connectOpts = {
       headless: false,
       args: [
         '--no-sandbox',
@@ -106,8 +113,18 @@ class BHWScraper {
       customConfig: {},
       connectOption: {},
       disableXvfb: false,  // false = let puppeteer-real-browser manage its own Xvfb session on Linux
-      ignoreAllFlags: false
-    });
+      ignoreAllFlags: false,
+    };
+    if (proxy) {
+      connectOpts.proxy = {
+        host: proxy.host,
+        port: proxy.port,
+        ...(proxy.username ? { username: proxy.username } : {}),
+        ...(proxy.password ? { password: proxy.password } : {}),
+      };
+    }
+
+    const connectPromise = connect(connectOpts);
     const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error(`puppeteer connect() timed out after ${CONNECT_TIMEOUT_MS / 1000}s`)), CONNECT_TIMEOUT_MS)
     );
@@ -276,8 +293,11 @@ class BHWScraper {
   /**
    * Fetch page with retry logic using Puppeteer Real Browser
    * Handles CloudFlare challenges automatically
+   * @param {string} url
+   * @param {number} attempt
+   * @param {{ waitForThreads?: boolean }} opts - listing pages should wait for thread cards
    */
-  async fetchPageWithRetries(url, attempt = 1) {
+  async fetchPageWithRetries(url, attempt = 1, opts = {}) {
     try {
       logger.debug(`Fetching ${url} (attempt ${attempt}/${this.maxRetries})`);
       
@@ -294,7 +314,7 @@ class BHWScraper {
       await sleep(2000);
 
       const title = await this.page.title().catch(() => '');
-      logger.debug(`Page title: ${title}`);
+      logger.info(`Page title: ${title}`);
 
       // Give puppeteer-real-browser Turnstile handler more time (up to 120s).
       // Still anonymous — no login cookies.
@@ -304,6 +324,25 @@ class BHWScraper {
           logger.warn('CloudFlare challenge still present after 120s — will retry with fresh browser.');
           this.cloudflareBlocked = true;
           return null;
+        }
+      }
+
+      // Listing pages: CF title can clear before XenForo thread cards render.
+      // Waiting here prevents false "0 threads" scrapes.
+      if (opts.waitForThreads) {
+        try {
+          await this.page.waitForSelector('div.structItem--thread', { timeout: 45000 });
+          logger.info('Thread cards visible on listing page.');
+        } catch (_) {
+          const finalTitle = await this.page.title().catch(() => '');
+          const count = await this.page.evaluate(
+            () => document.querySelectorAll('div.structItem--thread').length
+          ).catch(() => 0);
+          logger.warn(`Listing page has no thread cards after wait (title="${finalTitle}", count=${count})`);
+          if (count === 0) {
+            this.cloudflareBlocked = true;
+            return null;
+          }
         }
       }
 
@@ -328,13 +367,19 @@ class BHWScraper {
 
       return await this.page.content();
     } catch (error) {
-      logger.error(`Fetch attempt ${attempt}/${this.maxRetries} failed for ${url}:`, error.message);
+      const msg = error?.message ?? String(error);
+      logger.error(`Fetch attempt ${attempt}/${this.maxRetries} failed for ${url}: ${msg}`);
+      if (/INVALID_AUTH_CREDENTIALS|ERR_PROXY|407/i.test(msg)) {
+        logger.error('Proxy auth/network failure — check SCRAPER_PROXY_URL credentials/quota.');
+        this.cloudflareBlocked = true;
+        return null;
+      }
       
       if (attempt < this.maxRetries) {
         const delay = this.retryDelay * attempt;
         logger.info(`Retrying in ${delay}ms...`);
         await sleep(delay);
-        return this.fetchPageWithRetries(url, attempt + 1);
+        return this.fetchPageWithRetries(url, attempt + 1, opts);
       }
       
       return null;
@@ -412,7 +457,7 @@ class BHWScraper {
       stats: { totalFound: 0, filteredOut: 0, alreadyExisted: 0, newProcessed: 0, approved: 0, rejected: 0 },
     };
 
-    const html = await this.fetchPageWithRetries(url);
+    const html = await this.fetchPageWithRetries(url, 1, { waitForThreads: true });
     
     if (!html) {
       logger.error(`Failed to fetch listing page ${pageNum}`);
@@ -422,15 +467,21 @@ class BHWScraper {
     const $ = cheerio.load(html);
     const allCards = $('div.structItem--thread').toArray();
 
-    // ── Only look at the top 20 cards ───────────────────────────────────────
-    // BHW always lists newest posts first. New leads always arrive at the top.
-    // 20 gives enough headroom to catch new posts even when bumped/old threads
-    // are floating near position 10. The page typically has ~20 threads total,
-    // so this covers the entire first page without over-scanning.
-    const TOP_N    = 20;
+    // Empty listing after a "successful" fetch = soft-block / incomplete CF pass
+    if (allCards.length === 0) {
+      const title = await this.page.title().catch(() => '');
+      logger.warn(`Listing HTML parsed 0 thread cards (title="${title}") — treating as blocked.`);
+      this.cloudflareBlocked = true;
+      return emptyResult;
+    }
+
+    // ── Top N listing cards ─────────────────────────────────────────────────
+    // Pipeline C only: 10 is enough for today-jobs (newest float to top).
+    // Full Pipeline A keeps 20 for catch-up headroom.
+    const TOP_N    = config.pipelineCOnly ? 10 : 20;
     const threadCards = allCards.slice(0, TOP_N);
 
-    // Tracks all 5 inspected posts with per-post status for the WA ping
+    // Tracks inspected posts with per-post status for Discord / logs
     const inspectedPosts = [];
 
     const stats = {
@@ -440,12 +491,12 @@ class BHWScraper {
       new_processed: 0
     };
 
-    logger.info(`Found ${stats.total_found} threads on page ${pageNum} — inspecting top ${TOP_N}`);
+    logger.info(`Found ${stats.total_found} threads on page ${pageNum} — inspecting top ${TOP_N}${config.pipelineCOnly ? ' [Pipeline C]' : ''}`);
 
     // ============================================
-    // PASS 1: Extract IDs from top 5 only (fast, no DB calls)
+    // PASS 1: Extract IDs from top N (fast, no DB calls)
     // ============================================
-    logger.info('Step 1: Extracting top-5 thread IDs...');
+    logger.info(`Step 1: Extracting top-${TOP_N} thread IDs...`);
     const allThreadIds = [];
     const threadDataMap = new Map();
 
@@ -535,9 +586,9 @@ class BHWScraper {
     }
 
     // ============================================
-    // PASS 3: Process only NEW threads from the top 5
+    // PASS 3: Process only NEW threads from the top N
     // ============================================
-    logger.info('Step 3: Processing NEW threads from top-5...');
+    logger.info(`Step 3: Processing NEW threads from top-${TOP_N}...`);
     const newThreadIds = allThreadIds.filter(id => !existingSet.has(id));
     logger.info(`${newThreadIds.length} NEW thread(s) to process this cycle (out of top ${TOP_N} checked)`);
 
@@ -562,6 +613,49 @@ class BHWScraper {
         stats.filtered_out++;
         const ip = inspectedPosts.find(p => p.threadId === threadId);
         if (ip) { ip.status = 'skipped-ancient'; ip.age = threadAgeCategory; }
+        continue;
+      }
+
+      // ── Pipeline C bandwidth gate ─────────────────────────────────────────
+      // Only open the thread page (proxy-heavy) when the post is from TODAY.
+      // Non-today threads: store a lightweight listing row for dedup — no goto.
+      const postedToday = !!(basicData.postedAt && this.isToday(basicData.postedAt));
+      if (config.pipelineCOnly && !postedToday) {
+        logger.info(`[Pipeline C] Skipping thread page fetch — not posted today (saves proxy bandwidth)`);
+        const posterUsername = basicData.author || null;
+        const description = '(listing only — not posted today; thread page not fetched in PIPELINE_C_ONLY)';
+
+        const lead = await createLead({
+          threadId,
+          threadUrl: basicData.fullUrl,
+          title: basicData.title,
+          description,
+          posterUsername,
+          posterUrl: posterUsername ? `https://www.blackhatworld.com/members/${posterUsername}/` : null,
+          postDate: basicData.postedAt,
+          threadAgeCategory,
+          tags: [],
+        });
+
+        await updateLeadQualification(
+          lead.id,
+          false,
+          'Skipped thread fetch — not today (Pipeline C only)',
+          0
+        );
+
+        const ip = inspectedPosts.find(p => p.threadId === threadId);
+        if (ip) { ip.status = 'skipped-not-today'; ip.age = threadAgeCategory; }
+
+        await logActivity({
+          actionType: 'pipeline_c_skip',
+          leadId: lead.id,
+          description: `Pipeline C skipped thread page (not today): ${basicData.title}`,
+          metadata: { threadId, postedAt: basicData.postedAt },
+        });
+
+        stats.new_processed++;
+        stats.filtered_out++;
         continue;
       }
 
