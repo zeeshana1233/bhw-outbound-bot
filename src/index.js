@@ -43,115 +43,98 @@ async function processQualifiedLeads() {
     return;
   }
 
-  // GAP-03: Enforce daily caps before doing anything
+  // GAP-03: Enforce daily DM cap before doing anything
   const { commentsToday, dmsToday } = await getDailyActionCounts();
-  const commentCap = config.bot.dailyCommentCap;
-  const dmCap      = config.bot.dailyDmCap;
+  const dmCap = config.bot.dailyDmCap;
 
-  if (commentsToday >= commentCap) {
-    logger.warn(`⛔  Daily comment cap reached (${commentsToday}/${commentCap}) — skipping outreach round.`);
+  if (dmsToday >= dmCap) {
+    logger.warn(`⛔  Daily DM cap reached (${dmsToday}/${dmCap}) — skipping outreach round.`);
     return;
   }
 
-  logger.info(`    🎯  ${leads.length} qualified lead(s) to contact  [comments today: ${commentsToday}/${commentCap} | DMs: ${dmsToday}/${dmCap}]`);
+  // Enforce 1 DM per scrape run for human pacing and safety
+  const leadsToProcess = leads.slice(0, 1);
+  const remainingCount = leads.length - leadsToProcess.length;
 
-  let commentsSent = commentsToday;
-  let dmsSent      = dmsToday;
+  logger.info(`    🎯  Processing ${leadsToProcess.length} lead this round (1 DM per run limit; ${remainingCount} in backlog queue) [DMs today: ${dmsToday}/${dmCap}]`);
 
-  for (let i = 0; i < leads.length; i++) {
-    const lead = leads[i];
-    logger.info(`\n  [${i + 1}/${leads.length}] Lead #${lead.id}: "${lead.title?.slice(0, 60)}"`);
+  for (let i = 0; i < leadsToProcess.length; i++) {
+    const lead = leadsToProcess[i];
+    const ageCategory = lead.thread_age_category || 'fresh';
+    logger.info(`\n  Lead #${lead.id}: "${lead.title?.slice(0, 60)}" by @${lead.poster_username || 'unknown'}`);
 
     try {
-      // GAP-03: Hard-stop when cap hit mid-loop
-      if (commentsSent >= commentCap) {
-        logger.warn(`⛔  Comment cap (${commentCap}) reached mid-loop — stopping outreach.`);
-        break;
+      // Step 1 — Public Comment: Paused (DM-only mode)
+      if (config.bot?.commentingEnabled) {
+        logger.info(`  Public comment posting enabled by config...`);
+        const commentResult = await generateAndPostComment(lead, { dryRun: botState.isDryRun() });
+        if (!commentResult.success) {
+          logger.warn(`  Comment failed — skipping DM for lead #${lead.id}`);
+          continue;
+        }
+        // Human pause between comment and DM if commenting was active
+        const pauseMs = randomDelay(2 * 60 * 1000, 4 * 60 * 1000);
+        logger.info(`  ⏳  Pausing ~${Math.round(pauseMs / 60000)} min before DM…`);
+        await sleep(pauseMs);
+      } else {
+        logger.info(`  ℹ️  Public forum commenting is PAUSED (DM-only mode active)`);
       }
 
-      // Step 1 — Comment on the thread (fresh posts only — <30 days)
-      const ageCategory = lead.thread_age_category || 'fresh';
-      if (ageCategory !== 'fresh') {
-        logger.info(`  ⏭  Skipping comment — thread is "${ageCategory}" (comments for fresh threads only)`);
+      // Step 2 — DM the poster directly
+      if (lead.dm_sent === true) {
+        logger.info(`  ⏭  Already sent DM to lead #${lead.id} — skipping`);
         continue;
       }
 
-      // Duplicate guard: already commented on this thread? (DB query already filters,
-      // but guard here catches any race between two loop invocations)
-      if (lead.commented === true) {
-        logger.info(`  ⏭  Already commented on lead #${lead.id} — skipping`);
-        continue;
-      }
-
-      const commentResult = await generateAndPostComment(lead, { dryRun: botState.isDryRun() });
-      if (!commentResult.success) {
-        logger.warn(`  Comment failed — skipping DM for lead #${lead.id}`);
-        continue;
-      }
-      commentsSent++;
+      logger.info(`  📩  Sending direct outreach DM to @${lead.poster_username || 'unknown'}…`);
+      const dmResult = await generateAndSendDM(lead, { dryRun: botState.isDryRun() });
 
       let dmText = null;
-
-      // GAP-02: Only DM posters on fresh threads (<30 days)
-      if (!shouldSendDM(ageCategory)) {
-        logger.info(`  ⏭  Skipping DM — thread is "${ageCategory}" (DMs for fresh threads only)`);
-
-      } else if (lead.dm_sent === true) {
-        logger.info(`  ⏭  Already sent DM to lead #${lead.id} — skipping`);
-
-      } else if (dmsSent >= dmCap) {
-        logger.warn(`  ⛔  DM cap (${dmCap}) reached — skipping DM for lead #${lead.id}`);
-
+      let followUpText = null;
+      if (dmResult.success) {
+        dmText = dmResult.dmText;
+        followUpText = dmResult.followUpText;
       } else {
-        // Short human pause between comment and DM — 2 to 4 minutes
-        const pauseMs  = randomDelay(2 * 60 * 1000, 4 * 60 * 1000);
-        const pauseMin = Math.round(pauseMs / 60000);
-        logger.info(`  ⏳  Pausing ~${pauseMin} min before DM (human gap)…`);
-        await sleep(pauseMs);
-
-        // Step 2 — DM the poster
-        const dmResult = await generateAndSendDM(lead, { dryRun: botState.isDryRun() });
-        if (dmResult.success) {
-          dmText = dmResult.dmText;
-          dmsSent++;
-        }
+        logger.warn(`  DM failed for lead #${lead.id}`);
       }
 
-      // ── WA full outreach report ───────────────────────────────────────
-      // Fires after comment (and DM if sent) — gives full visibility
+      // ── Discord outreach report ───────────────────────────────────────
       try {
         const reportLines = [
-          `🎯 *Outreach Complete!*`,
+          `🎯 *Outreach Complete! (DM-Only)*`,
           '',
           `📌 *Post:* "${lead.title}"`,
           `🔗 ${lead.thread_url}`,
           `👤 Poster: @${lead.poster_username || 'unknown'}  |  Age: ${ageCategory}`,
           `🤖 AI Score: ${Math.round((lead.niche_match_score || 0))}%`,
-          '',
-          `💬 *Comment posted:*`,
-          commentResult.commentText || '(text not available)',
         ];
 
         if (dmText) {
           reportLines.push('');
-          reportLines.push(`📩 *DM sent:*`);
+          reportLines.push(`📩 *Message 1 (Instant DM):*`);
           reportLines.push(dmText);
         } else {
           reportLines.push('');
-          reportLines.push(`📩 DM: scheduled (fires ~2-4 min after comment)`);
+          reportLines.push(`⚠️ DM send attempt finished (check logs)`);
         }
 
-        await alerts.sendRawAlert(reportLines.join('\n')).catch(() => {});
+        if (followUpText) {
+          reportLines.push('');
+          reportLines.push(`⏰ *Message 2 (Follow-Up — Scheduled for 24–72h):*`);
+          reportLines.push(followUpText);
+        }
+
+        await alerts.sendOutreachReport(reportLines.join('\n')).catch(() => {});
       } catch (alertErr) {
-        logger.warn(`WA outreach report failed: ${alertErr.message}`);
+        logger.warn(`Discord outreach report failed: ${alertErr.message}`);
       }
 
     } catch (err) {
       logger.error(`  Error on lead #${lead.id}: ${err.message}`);
     }
 
-    // Random gap between leads — looks natural, avoids bot detection
-    if (i < leads.length - 1) {
+    // Random gap between leads if multiple were processed
+    if (i < leadsToProcess.length - 1) {
       const pauseMs  = BETWEEN_LEADS_MIN_MS + Math.random() * (BETWEEN_LEADS_MAX_MS - BETWEEN_LEADS_MIN_MS);
       const pauseMin = Math.round(pauseMs / 60000);
       logger.info(`\n  ⏳  Waiting ~${pauseMin} min before next lead…`);
@@ -180,8 +163,8 @@ async function startScraperAndOutreachLoop() {
 
   const tick = async () => {
     // ── Randomised interval (re-rolled every tick so the pattern is never fixed) ─
-    const minMs    = config.bhw.scrapeIntervalMin || 10 * 60 * 1000;
-    const maxMs    = config.bhw.scrapeIntervalMax || 20 * 60 * 1000;
+    const minMs    = config.bhw.scrapeIntervalMin || 20 * 60 * 1000;
+    const maxMs    = config.bhw.scrapeIntervalMax || 40 * 60 * 1000;
     let intervalMs = Math.floor(minMs + Math.random() * (maxMs - minMs));
 
     if (botState.isPaused()) {
@@ -414,9 +397,9 @@ async function main() {
     await initDatabase();
     logger.info('✅  Database connected\n');
 
-    // Follow-up/inbox/community stay off
+    // Follow-up system active (Queue 2)
     // startInboxMonitor({ dryRun: DRY_RUN });
-    // startFollowUpSystem({ dryRun: DRY_RUN });
+    startFollowUpSystem({ dryRun: DRY_RUN });
     // startCommunityCommenter({ dryRun: DRY_RUN });
     // bhwSession.startHealthCheck();
     await initDiscord();

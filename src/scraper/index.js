@@ -616,14 +616,17 @@ class BHWScraper {
         continue;
       }
 
-      // ── Pipeline C bandwidth gate ─────────────────────────────────────────
-      // Only open the thread page (proxy-heavy) when the post is from TODAY.
-      // Non-today threads: store a lightweight listing row for dedup — no goto.
+      // ── "Posted Today Only" gate (Pipeline C & Pipeline A) ────────────────
+      // Only open the thread page (heavy) when the post is from TODAY.
+      // Non-today threads: store a lightweight listing row for dedup — no goto, no AI qualification.
       const postedToday = !!(basicData.postedAt && this.isToday(basicData.postedAt));
-      if (config.pipelineCOnly && !postedToday) {
-        logger.info(`[Pipeline C] Skipping thread page fetch — not posted today (saves proxy bandwidth)`);
+      const shouldEnforceToday = config.pipelineCOnly || config.bot?.todayOnly;
+
+      if (shouldEnforceToday && !postedToday) {
+        const modeTag = config.pipelineCOnly ? '[Pipeline C]' : '[Pipeline A]';
+        logger.info(`${modeTag} Skipping thread page fetch — not posted today`);
         const posterUsername = basicData.author || null;
-        const description = '(listing only — not posted today; thread page not fetched in PIPELINE_C_ONLY)';
+        const description = '(listing only — not posted today; skipped by today-only filter)';
 
         const lead = await createLead({
           threadId,
@@ -640,7 +643,7 @@ class BHWScraper {
         await updateLeadQualification(
           lead.id,
           false,
-          'Skipped thread fetch — not today (Pipeline C only)',
+          'Skipped thread fetch — not today',
           0
         );
 
@@ -648,9 +651,9 @@ class BHWScraper {
         if (ip) { ip.status = 'skipped-not-today'; ip.age = threadAgeCategory; }
 
         await logActivity({
-          actionType: 'pipeline_c_skip',
+          actionType: 'today_filter_skip',
           leadId: lead.id,
-          description: `Pipeline C skipped thread page (not today): ${basicData.title}`,
+          description: `Skipped thread page (not today): ${basicData.title}`,
           metadata: { threadId, postedAt: basicData.postedAt },
         });
 
@@ -718,7 +721,7 @@ class BHWScraper {
       } else {
         // NOTE: AI is ONLY called here for genuinely NEW posts.
         // Already-seen posts are caught by the DB batch check in PASS 2 and never reach here.
-        logger.info('Qualifying thread with OpenClaw (GPT-4o mini)...');
+        logger.info('Qualifying thread with OpenAI...');
         qualification = await aiEngine.qualifyLead(basicData.title, description);
         logger.info(`Qualification result: ${qualification.qualified ? 'APPROVED' : 'REJECTED'} (Confidence: ${qualification.confidence}, Tier: ${qualification.tier})`);
       }

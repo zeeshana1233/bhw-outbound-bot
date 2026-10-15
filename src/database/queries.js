@@ -130,10 +130,10 @@ export async function getQualifiedLeadsToContact() {
   const sql = `
     SELECT * FROM leads 
     WHERE is_qualified = true 
-    AND commented = false 
-    AND thread_age_category IN ('fresh', 'old')
-    ORDER BY discovered_at ASC
-    LIMIT 10
+    AND dm_sent = false 
+    AND (post_date >= CURRENT_DATE OR discovered_at >= CURRENT_DATE)
+    ORDER BY discovered_at DESC
+    LIMIT 1
   `;
   const result = await query(sql);
   return result.rows;

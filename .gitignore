@@ -9,9 +9,7 @@ node_modules/
 # Logs
 logs/*
 !logs/.gitkeep
-
-# Prompt logs (generated at runtime — keep the dir, ignore the files)
-docs/prompt-logs/*.md
+log.txt
 *.log
 npm-debug.log*
 

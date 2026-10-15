@@ -69,6 +69,7 @@ export const config = {
     botToken:            process.env.DISCORD_BOT_TOKEN,
     channelId:           process.env.DISCORD_CHANNEL_ID          || '',
     guildId:             process.env.DISCORD_GUILD_ID             || '',
+    dmAlertsChannelId:   process.env.DISCORD_DM_ALERTS_CHANNEL_ID || '',
     pipelineCChannelId:  process.env.PIPELINE_C_CHANNEL_ID      || '',
     nicheScoutChannelId: process.env.NICHE_SCOUT_CHANNEL_ID     || '',
   },
@@ -103,6 +104,8 @@ export const config = {
     maxFollowUps:    parseInt(process.env.MAX_FOLLOW_UPS)    || 3,   // plan §5.2: 3 touches max
     dailyCommentCap: parseInt(process.env.DAILY_COMMENT_CAP) || 25,  // GAP-03
     dailyDmCap:      parseInt(process.env.DAILY_DM_CAP)      || 25,  // GAP-03
+    commentingEnabled: process.env.PIPELINE_A_COMMENTING_ENABLED === 'true', // default false (DM-only mode)
+    todayOnly:         process.env.PIPELINE_A_TODAY_ONLY !== 'false',       // default true (only today's jobs)
     followUpDays: (process.env.FOLLOW_UP_DAYS || '7,12,21')          // plan §5.2
       .split(',')
       .map(d => parseInt(d.trim())),

@@ -134,43 +134,41 @@ async function humanTypeInBrowser(page, text) {
 // FOLLOW-UP SCHEDULING
 // ─────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────
+
 /**
- * Schedule 3 follow-up messages immediately after the DM is sent.
- * Generates the text for each interval right now (context is fresh)
- * and stores it in the DB ready to send.
+ * Schedule a single follow-up message (Message 2) to fire 24–72 hours after initial DM.
+ *
+ * @param {Object} lead
+ * @param {number} conversationId
+ * @param {string} followUpText
  */
-async function scheduleFollowUps(lead, conversationId, dmText) {
-  const intervals = [2, 3, 5, 7, 12, 21]; // day 2, 3, 5, 7, 12, 21 after DM sent
-  const previousMessages = `Outbound DM:\n${dmText}`;
+async function scheduleSingleFollowUp(lead, conversationId, followUpText) {
+  if (!followUpText || !followUpText.trim()) {
+    logger.info(`  No follow-up text provided for lead #${lead.id} — skipping follow-up scheduling.`);
+    return;
+  }
 
-  for (let i = 0; i < intervals.length; i++) {
-    const days = intervals[i];
+  // Random delay between 24 hours and 72 hours (1–3 days)
+  const MIN_HOURS = 24;
+  const MAX_HOURS = 72;
+  const delayMs = randomDelay(MIN_HOURS * 3600 * 1000, MAX_HOURS * 3600 * 1000);
+  const scheduledFor = new Date(Date.now() + delayMs);
+  const scheduledStr = scheduledFor.toLocaleString();
 
-    // Add random jitter: 0–24 hrs so follow-ups never land at a predictable time
-    const jitterMs    = Math.floor(Math.random() * 24 * 60 * 60 * 1000);
-    const scheduledFor = new Date(Date.now() + days * 24 * 60 * 60 * 1000 + jitterMs);
-    const scheduledStr = scheduledFor.toLocaleString();
+  try {
+    await scheduleFollowUp({
+      leadId:         lead.id,
+      conversationId: conversationId,
+      scheduledFor:   scheduledFor,
+      followUpNumber: 1,
+      messageText:    followUpText,
+    });
 
-    try {
-      const followUpText = await aiEngine.generateFollowUp(
-        lead.title,
-        lead.description || '',
-        days,
-        previousMessages
-      );
-
-      await scheduleFollowUp({
-        leadId:         lead.id,
-        conversationId: conversationId,
-        scheduledFor:   scheduledFor,
-        followUpNumber: i + 1,
-        messageText:    followUpText,
-      });
-
-      logger.info(`  Follow-up #${i + 1} scheduled for day ~${days} (${scheduledStr})`);
-    } catch (err) {
-      logger.warn(`  Failed to schedule follow-up #${i + 1}: ${err.message}`);
-    }
+    const hoursFromNow = Math.round(delayMs / 3600000);
+    logger.info(`  Follow-up #1 scheduled in ~${hoursFromNow}h (${scheduledStr})`);
+  } catch (err) {
+    logger.warn(`  Failed to schedule follow-up #1: ${err.message}`);
   }
 }
 
@@ -185,21 +183,19 @@ async function scheduleFollowUps(lead, conversationId, dmText) {
  * @returns {string} The generated DM text
  */
 export async function generateDM(lead) {
-  logger.info(`Generating DM for lead "${lead.title}"...`);
+  logger.info(`Generating two-message sequence for lead "${lead.title}"...`);
 
-  const pitchAngle = lead.pitch_angle ||
-    lead.qualification_reason ||
-    'software development and automation expertise';
-
-  const dmText = await aiEngine.generateDMOutreach(
+  const { message1, message2, thoughts } = await aiEngine.generateLeadDMAndFollowUp(
     lead.title,
     lead.description || '',
-    lead.poster_username,
-    pitchAngle
+    lead.poster_username
   );
 
-  logger.info('DM generated successfully.');
-  return dmText.trim();
+  if (thoughts) {
+    logger.info(`  AI Thoughts: ${thoughts}`);
+  }
+  logger.info('DM (Message 1) and Follow-Up (Message 2) generated successfully.');
+  return { dmText: message1 ? message1.trim() : '', followUpText: message2 ? message2.trim() : '' };
 }
 
 /**
@@ -274,7 +270,33 @@ export async function sendDM(lead, dmText, opts = {}) {
   }
 
   if (DRY_RUN) {
-    logger.info('DRY RUN — skipping browser actions and DB update.\n');
+    logger.info('DRY RUN — skipping BHW browser actions. Advancing DB queue for Discord testing...\n');
+    try {
+      const existingConv = await getConversationByLeadId(lead.id);
+      const conversation = existingConv || await createConversation(lead.id);
+      const dbConversationId = conversation.id;
+
+      await createDM({
+        leadId:         lead.id,
+        conversationId: dbConversationId,
+        direction:      'outbound',
+        messageText:    dmText,
+        messageType:    'initial_outreach',
+        generatedBy:    'aiEngine',
+        promptUsed:     `title: ${lead.title}`,
+      });
+
+      await incrementConversationMessages(dbConversationId, 'outbound');
+      await markLeadDMSent(lead.id);
+      logger.info(`           [DRY RUN] Lead #${lead.id} marked dm_sent in DB (next cycle will test next lead).`);
+
+      if (opts.followUpText) {
+        await scheduleSingleFollowUp(lead, dbConversationId, opts.followUpText);
+        logger.info(`           [DRY RUN] Scheduled follow-up preview for lead #${lead.id}.`);
+      }
+    } catch (dryErr) {
+      logger.warn('[DRY RUN] DB update error:', dryErr.message);
+    }
     return { success: true, conversationUrl: null, conversationId: null, dryRun: true };
   }
 
@@ -538,9 +560,11 @@ export async function sendDM(lead, dmText, opts = {}) {
     await markLeadDMSent(lead.id);
     logger.info(`           Database updated — lead #${lead.id} marked dm_sent.`);
 
-    // Follow-up generation disabled — uncomment to re-enable
-    // logger.info('           Scheduling follow-up sequence...');
-    // await scheduleFollowUps(lead, dbConversationId, dmText);
+    // Schedule single follow-up (Message 2) for 24–72 hours later if provided
+    if (opts.followUpText) {
+      logger.info('           Scheduling 24–72h follow-up (Message 2)...');
+      await scheduleSingleFollowUp(lead, dbConversationId, opts.followUpText);
+    }
 
   } catch (dbErr) {
     logger.error('CRITICAL — Failed to update database after sending DM:', dbErr.message);
@@ -553,7 +577,9 @@ export async function sendDM(lead, dmText, opts = {}) {
   logger.info(`   Recipient     : @${lead.poster_username}`);
   logger.info(`   Conversation  : ${conversationUrl || currentUrl}`);
   logger.info(`   DB conv ID    : ${dbConversationId}`);
-    // logger.info(`   Follow-ups    : scheduled at day 2, 3, 5, 7, 12, 21`);
+  if (opts.followUpText) {
+    logger.info(`   Follow-up     : scheduled for 24–72h (Message 2)`);
+  }
   logger.info('═══════════════════════════════════════════════════════════\n');
 
   return {
@@ -573,8 +599,8 @@ export async function sendDM(lead, dmText, opts = {}) {
  * @returns {Object} { success, dmText, conversationUrl, conversationId }
  */
 export async function generateAndSendDM(lead, opts = {}) {
-  const dmText = await generateDM(lead);
-  const result = await sendDM(lead, dmText, opts);
+  const { dmText, followUpText } = await generateDM(lead);
+  const result = await sendDM(lead, dmText, { ...opts, followUpText });
 
   // ── Post-send alerts ─────────────────────────────────────────────────────
   if (result.success) {
@@ -611,7 +637,7 @@ export async function generateAndSendDM(lead, opts = {}) {
   }
   // ────────────────────────────────────────────────────────────────────────
 
-  return { ...result, dmText };
+  return { ...result, dmText, followUpText };
 }
 
 export default {

@@ -36,6 +36,19 @@ const logger = winston.createLogger({
     new winston.transports.File({
       filename: path.join(__dirname, '../../logs/combined.log'),
     }),
+    // Save all terminal-style logs to root log.txt
+    new winston.transports.File({
+      filename: path.join(__dirname, '../../log.txt'),
+      format: winston.format.combine(
+        winston.format.printf(({ level, message, timestamp, ...metadata }) => {
+          let msg = `${timestamp} [${level}] : ${message}`;
+          if (Object.keys(metadata).length > 0 && metadata.service !== 'bhw-bot') {
+            msg += ` ${JSON.stringify(metadata)}`;
+          }
+          return msg;
+        })
+      ),
+    }),
   ],
 });
 

@@ -10,7 +10,8 @@ import {
   markFollowUpFailed,
   logActivity,
 } from '../database/queries.js';
-import { sendConversationReply } from './conversation.js';
+import { sendConversationReply, readConversationMessages } from './conversation.js';
+import alerts from '../services/alerts.js';
 
 // ── timing constants ──────────────────────────────────────────────────────────
 const LOOP_MIN_MS = 30 * 60 * 1000;   // 30 min
@@ -23,6 +24,7 @@ function randomLoopInterval() {
 // ── sendFollowUp ──────────────────────────────────────────────────────────────
 /**
  * Navigate to the stored BHW conversation and send the pre-written follow-up.
+ * Checks live conversation messages first: if the client replied, pauses follow-ups.
  * @param {object} fu   - Row from getPendingFollowUpsWithContext()
  * @param {object} opts - { dryRun: boolean }
  * @returns {boolean}
@@ -31,27 +33,69 @@ async function sendFollowUp(fu, opts = {}) {
   const { id, conversation_id, lead_id, follow_up_number, message_text,
           lead_poster_username, bhw_conversation_url, lead_title } = fu;
 
+  if (opts.dryRun) {
+    logger.info(`  [DRY RUN] Follow-up Message 2 preview for @${lead_poster_username}:\n  ${message_text}`);
+    await markFollowUpSent(id).catch(() => {});
+    
+    // Send preview card to Discord DM Alerts channel
+    await alerts.sendOutreachReport([
+      `⏰ *Follow-Up Message 2 Sent! [DRY RUN]*`,
+      '',
+      `👤 User: @${lead_poster_username}`,
+      `📌 Job: "${lead_title}"`,
+      `🔗 ${bhw_conversation_url || 'https://www.blackhatworld.com/conversations/'}`,
+      '',
+      `📩 *Message 2 (Follow-Up):*`,
+      message_text,
+    ].join('\n')).catch(() => {});
+
+    return true;
+  }
+
   if (!bhw_conversation_url) {
     logger.warn(`  ⚠️  No BHW URL stored for follow-up #${id} (conv #${conversation_id}) — skipping`);
     await markFollowUpFailed(id, 'no_bhw_url').catch(() => {});
     return false;
   }
 
-  logger.info(`  Sending follow-up #${follow_up_number} → @${lead_poster_username}`);
+  logger.info(`  Checking follow-up #${follow_up_number} → @${lead_poster_username}`);
   logger.info(`    "${lead_title?.slice(0, 60)}…"`);
   logger.info(`    URL: ${bhw_conversation_url}`);
-
-  if (opts.dryRun) {
-    logger.info(`  [DRY RUN] Message:\n  ${message_text}`);
-    await markFollowUpSent(id).catch(() => {});
-    return true;
-  }
 
   try {
     await bhwSession.ensureAuthenticated();
     const page = await bhwSession.getPage();
 
     await bhwSession.navigateTo(bhw_conversation_url);
+    await randomDelay(2000, 4000);
+
+    // ── Live Page Check: Did the client reply? ───────────────────────────
+    const messages = await readConversationMessages(page).catch(() => []);
+    if (messages.length > 0) {
+      const latestMessage = messages[messages.length - 1];
+      if (!latestMessage.isOurs) {
+        logger.info(`  ⏸️  Client @${lead_poster_username} ALREADY REPLIED! Pausing follow-up #${id}`);
+        logger.info(`      Latest message: "${latestMessage.text.substring(0, 100)}..."`);
+        
+        await pauseFollowUpsForConversation(conversation_id, 'client_replied_live').catch(() => {});
+        
+        // Notify Discord that the client replied so Zeeshan knows
+        await alerts.sendRawAlert([
+          `📬 *CLIENT REPLIED ON BHW!*`,
+          '',
+          `👤 User: @${lead_poster_username}`,
+          `📌 Job: "${lead_title}"`,
+          `🔗 ${bhw_conversation_url}`,
+          '',
+          `💬 Latest message from client:`,
+          `"${latestMessage.text.substring(0, 300)}"`,
+          '',
+          `✅ Follow-up was safely paused. Check BHW conversation!`,
+        ].join('\n')).catch(() => {});
+
+        return false;
+      }
+    }
 
     // Small human pause before typing
     await randomDelay(2000, 5000);

@@ -23,13 +23,17 @@ import { config } from '../config/config.js';
 // INTERNAL — thin wrapper so every caller goes via sendToChannel
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function sendAlert(text) {
+async function sendAlert(text, channelId = null) {
   try {
-    const result = await sendToChannel(text);
+    const targetChannel = channelId || config.discord.channelId;
+    const result = targetChannel && targetChannel !== config.discord.channelId
+      ? await sendToChannelById(targetChannel, text)
+      : await sendToChannel(text);
+
     if (result?.skipped) {
       logger.info(`[Alerts] Discord not ready — skipped: ${text.substring(0, 80)}`);
     } else if (result?.sent === false) {
-      logger.warn('[Alerts] sendToChannel failed:', result.error || 'unknown error');
+      logger.warn('[Alerts] Discord alert failed:', result.error || 'unknown error');
     } else {
       logger.info('[Alerts] Alert sent to Discord channel.');
     }
@@ -48,8 +52,16 @@ async function sendAlert(text) {
  * Send any plain-text Discord message.
  * Used for one-off alerts (e.g. session restored).
  */
-export async function sendRawAlert(text) {
-  return sendAlert(text);
+export async function sendRawAlert(text, channelId = null) {
+  return sendAlert(text, channelId);
+}
+
+/**
+ * Send the outreach preview report (Message 1 & 2) to the dedicated DM channel if configured.
+ */
+export async function sendOutreachReport(text) {
+  const channel = config.discord.dmAlertsChannelId || config.discord.channelId;
+  return sendAlert(text, channel);
 }
 
 /**
@@ -189,7 +201,8 @@ export async function sendHotLeadAlert(lead, dmText) {
   ].join('\n');
 
   logger.info(`[Alerts] Hot lead alert for @${lead.poster_username} (score ${score})`);
-  return sendAlert(text);
+  const channel = config.discord.dmAlertsChannelId || config.discord.channelId;
+  return sendAlert(text, channel);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -457,6 +470,7 @@ export async function sendNicheScoutDailyReport({ today = {}, week = {}, skipped
 
 export default {
   sendRawAlert,
+  sendOutreachReport,
   sendHandoffAlert,
   sendHotLeadAlert,
   sendCallReminder,
