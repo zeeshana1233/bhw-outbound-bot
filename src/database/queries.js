@@ -106,7 +106,7 @@ export async function markLeadDMSent(leadId) {
 export async function updateLeadStatus(leadId, status) {
   const sql = `
     UPDATE leads 
-    SET status = $1, last_interaction = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+    SET status = $1, updated_at = CURRENT_TIMESTAMP
     WHERE id = $2
     RETURNING *
   `;
