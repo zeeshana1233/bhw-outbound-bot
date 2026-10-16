@@ -65,6 +65,49 @@ export async function sendOutreachReport(text) {
 }
 
 /**
+ * Send an alert to the DM channel when a job post is disqualified by AI.
+ * Displays title, poster, thread URL, reason, and confidence score.
+ */
+export async function sendLeadDisqualifiedAlert({ title, url, posterUsername, reason, confidence }) {
+  const channel = config.discord.dmAlertsChannelId || config.discord.channelId;
+  const confPct = Math.round((confidence || 0) * 100);
+
+  const text = [
+    '❌ **Job Disqualified**',
+    '',
+    `📌 **Post:** "${title}"`,
+    `🔗 ${url}`,
+    `👤 **Poster:** @${posterUsername || 'unknown'}`,
+    `🤖 **AI Confidence:** ${confPct}%`,
+    `📋 **Reason:** ${reason || 'Does not match qualification criteria.'}`,
+  ].join('\n');
+
+  logger.info(`[Alerts] Sending disqualified lead alert for @${posterUsername || 'unknown'} to DM channel`);
+  return sendAlert(text, channel);
+}
+
+/**
+ * Send a cycle completion status / heartbeat alert to the DM channel after every scrape run.
+ */
+export async function sendScraperCycleHeartbeat({ runCount, runTs, inspectedCount, newLeadsCount, qualifiedCount, nextMinStr }) {
+  // Always send to the main bot control channel where startup & status messages go
+  const channel = config.discord.channelId;
+
+  const text = [
+    `🟢 **Everything Okay | Scraper Cycle Completed**`,
+    '',
+    `⏱ **Run:** #${runCount} | ${runTs}`,
+    `🔍 **Inspected Posts:** ${inspectedCount}`,
+    `🆕 **New Leads Found:** ${newLeadsCount}`,
+    `✅ **Qualified (AI Approved):** ${qualifiedCount}`,
+    `⏰ **Next Cycle:** in ~${nextMinStr} minutes (randomized window)`,
+  ].join('\n');
+
+  logger.info(`[Alerts] Sending cycle heartbeat (run #${runCount}) to Discord`);
+  return sendAlert(text, channel);
+}
+
+/**
  * Fire a handoff alert when the AI decides it cannot handle a conversation.
  *
  * @param {string}   username    - BHW username of the lead
@@ -471,6 +514,8 @@ export async function sendNicheScoutDailyReport({ today = {}, week = {}, skipped
 export default {
   sendRawAlert,
   sendOutreachReport,
+  sendLeadDisqualifiedAlert,
+  sendScraperCycleHeartbeat,
   sendHandoffAlert,
   sendHotLeadAlert,
   sendCallReminder,

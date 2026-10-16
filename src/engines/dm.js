@@ -185,17 +185,22 @@ async function scheduleSingleFollowUp(lead, conversationId, followUpText) {
 export async function generateDM(lead) {
   logger.info(`Generating two-message sequence for lead "${lead.title}"...`);
 
-  const { message1, message2, thoughts } = await aiEngine.generateLeadDMAndFollowUp(
+  const { message1, message2, subject, thoughts } = await aiEngine.generateLeadDMAndFollowUp(
     lead.title,
     lead.description || '',
-    lead.poster_username
+    lead.poster_username,
+    lead.thread_url || ''
   );
 
   if (thoughts) {
     logger.info(`  AI Thoughts: ${thoughts}`);
   }
   logger.info('DM (Message 1) and Follow-Up (Message 2) generated successfully.');
-  return { dmText: message1 ? message1.trim() : '', followUpText: message2 ? message2.trim() : '' };
+  return { 
+    dmText: message1 ? message1.trim() : '', 
+    followUpText: message2 ? message2.trim() : '', 
+    subject: subject ? subject.trim() : '' 
+  };
 }
 
 /**
@@ -599,8 +604,8 @@ export async function sendDM(lead, dmText, opts = {}) {
  * @returns {Object} { success, dmText, conversationUrl, conversationId }
  */
 export async function generateAndSendDM(lead, opts = {}) {
-  const { dmText, followUpText } = await generateDM(lead);
-  const result = await sendDM(lead, dmText, { ...opts, followUpText });
+  const { dmText, followUpText, subject } = await generateDM(lead);
+  const result = await sendDM(lead, dmText, { ...opts, followUpText, subject });
 
   // ── Post-send alerts ─────────────────────────────────────────────────────
   if (result.success) {
@@ -637,7 +642,7 @@ export async function generateAndSendDM(lead, opts = {}) {
   }
   // ────────────────────────────────────────────────────────────────────────
 
-  return { ...result, dmText, followUpText };
+  return { ...result, dmText, followUpText, subject };
 }
 
 export default {

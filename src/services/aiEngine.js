@@ -966,13 +966,14 @@ function extractXMLTag(text, tag) {
  * @param {string} posterUsername
  * @returns {Promise<{ message1: string, message2: string, thoughts: string }>}
  */
-export async function generateLeadDMAndFollowUp(title, description, posterUsername) {
+export async function generateLeadDMAndFollowUp(title, description, posterUsername, postUrl = '') {
   const userPrompt = `Poster: ${posterUsername || ''}
 Job Title: ${title || ''}
 Job Description:
 ${description || ''}
+Link to the post: ${postUrl || ''}
 
-Write the two-message sequence according to your instructions.`;
+Write the sequence according to your instructions.`;
 
   const raw = await callAI(ZEESHAN_AHMAD_SYSTEM_PROMPT, userPrompt, {
     temperature:  0.7,
@@ -981,10 +982,15 @@ Write the two-message sequence according to your instructions.`;
   });
 
   const thoughts = extractXMLTag(raw, 'thoughts') || '';
+  let subject = extractXMLTag(raw, 'subject') || '';
   let message1 = extractXMLTag(raw, 'message_1');
   let message2 = extractXMLTag(raw, 'message_2');
 
   // Fallback: if model omitted closing tags
+  if (!subject) {
+    const sMatch = raw.match(/<subject>([\s\S]*?)(?:<\/subject>|<message_1>|$)/i);
+    subject = sMatch ? sMatch[1].trim() : '';
+  }
   if (!message1) {
     const m1Match = raw.match(/<message_1>([\s\S]*?)(?:<message_2>|$)/i);
     message1 = m1Match ? m1Match[1].trim() : raw.trim();
@@ -994,7 +1000,7 @@ Write the two-message sequence according to your instructions.`;
     message2 = m2Match ? m2Match[1].trim() : '';
   }
 
-  return { message1, message2, thoughts };
+  return { message1, message2, subject, thoughts };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

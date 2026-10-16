@@ -91,9 +91,11 @@ async function processQualifiedLeads() {
 
       let dmText = null;
       let followUpText = null;
+      let subject = null;
       if (dmResult.success) {
         dmText = dmResult.dmText;
         followUpText = dmResult.followUpText;
+        subject = dmResult.subject;
       } else {
         logger.warn(`  DM failed for lead #${lead.id}`);
       }
@@ -101,13 +103,17 @@ async function processQualifiedLeads() {
       // ── Discord outreach report ───────────────────────────────────────
       try {
         const reportLines = [
-          `🎯 *Outreach Complete! (DM-Only)*`,
+          `🎯 **Outreach Complete! (DM-Only)**`,
           '',
-          `📌 *Post:* "${lead.title}"`,
-          `🔗 ${lead.thread_url}`,
-          `👤 Poster: @${lead.poster_username || 'unknown'}  |  Age: ${ageCategory}`,
-          `🤖 AI Score: ${Math.round((lead.niche_match_score || 0))}%`,
+          `📌 **Post:** "${lead.title}"`,
+          `🔗 **URL:** ${lead.thread_url}`,
+          `👤 **Poster:** @${lead.poster_username || 'unknown'}  |  **Age:** ${ageCategory}`,
+          `🤖 **AI Score:** ${Math.round((lead.niche_match_score || 0))}%`,
         ];
+
+        if (subject) {
+          reportLines.push(`📝 **Subject:** ${subject}`);
+        }
 
         if (dmText) {
           reportLines.push('');
@@ -283,6 +289,19 @@ async function startScraperAndOutreachLoop() {
     // ── Schedule next tick ────────────────────────────────────────────
     const nextMinStr = Math.round(intervalMs / 60000);
     logger.info(`\n  ⏰  Next scrape in ${nextMinStr} min${cfFailStreak ? ` (CF backoff streak ${cfFailStreak})` : ` (randomised ${Math.round(minMs / 60000)}–${Math.round(maxMs / 60000)} min window)`}`);
+
+    // Send "Everything Okay" status alert to Discord every cycle
+    if (!config.pipelineCOnly && scrapeResult && !scrapeResult.cloudflareBlocked) {
+      alerts.sendScraperCycleHeartbeat({
+        runCount,
+        runTs,
+        inspectedCount: scrapeResult.totalFound || 0,
+        newLeadsCount:  scrapeResult.newProcessed || 0,
+        qualifiedCount: scrapeResult.approved || 0,
+        nextMinStr,
+      }).catch(err => logger.warn(`[Heartbeat] Cycle heartbeat failed: ${err.message}`));
+    }
+
     setTimeout(tick, intervalMs);
   };
 

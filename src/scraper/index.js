@@ -14,7 +14,8 @@ import {
   checkThreadExists, 
   createLead, 
   updateLeadQualification,
-  getExistingThreadIds 
+  getExistingThreadIds,
+  logActivity
 } from '../database/queries.js';
 import { 
   extractThreadId, 
@@ -24,8 +25,7 @@ import {
   randomDelay 
 } from '../utils/helpers.js';
 import aiEngine from '../services/aiEngine.js';
-import { logActivity } from '../database/queries.js';
-import { sendPipelineCJobAlert } from '../services/alerts.js';
+import { sendPipelineCJobAlert, sendLeadDisqualifiedAlert } from '../services/alerts.js';
 
 // ── Persistent anonymous browser (shared across scrape cycles) ─────────────
 // Reusing one browser avoids a fresh Cloudflare Turnstile on every tick.
@@ -757,6 +757,18 @@ class BHWScraper {
         }).catch(err => logger.warn(`[Pipeline C] Alert failed: ${err.message}`));
       } else {
         logger.info(`[Pipeline C] Skipping alert — thread not from today (age: ${threadAgeCategory}, posted: ${basicData.postedAt || 'unknown'})`);
+      }
+
+      // ── Pipeline A: Disqualification alert to DM Channel ────────────────
+      // When a newly scraped post is disqualified by AI, notify the DM channel so the team sees why.
+      if (!config.pipelineCOnly && !qualification.qualified) {
+        sendLeadDisqualifiedAlert({
+          title:          basicData.title,
+          url:            basicData.fullUrl,
+          posterUsername: posterUsername,
+          reason:         qualification.reason,
+          confidence:     qualification.confidence,
+        }).catch(err => logger.warn(`[DM Alert] Disqualification alert failed: ${err.message}`));
       }
 
       // Log qualification / notifier activity
