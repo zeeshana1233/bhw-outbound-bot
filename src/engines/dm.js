@@ -36,6 +36,7 @@ import {
   createConversation,
   createDM,
   markLeadDMSent,
+  updateLeadStatus,
   scheduleFollowUp,
   getConversationByLeadId,
   incrementConversationMessages,
@@ -339,6 +340,30 @@ export async function sendDM(lead, dmText, opts = {}) {
 
   if (!titleSelector) {
     const pageTitle = await page.title().catch(() => '');
+    
+    // Check for XenForo error block (e.g. privacy settings, user does not accept DMs)
+    let errorText = '';
+    try {
+      const errEl = await page.$('.blockMessage, .blockMessage--error, .p-body-pageContent');
+      if (errEl) {
+        errorText = await page.evaluate(el => el.textContent.trim(), errEl);
+      }
+    } catch (_) {}
+
+    const isPrivacyBlocked = 
+      /privacy settings/i.test(errorText) || 
+      /may not send a direct message/i.test(errorText) ||
+      /cannot start a conversation/i.test(errorText) ||
+      /Oops! We ran into some problems/i.test(pageTitle);
+
+    if (isPrivacyBlocked) {
+      logger.warn(`  ⚠️ User @${lead.poster_username} does not accept direct messages (Privacy Blocked: "${errorText.slice(0, 100)}").`);
+      logger.info(`  Marking lead #${lead.id} as privacy_blocked so it won't be retried.`);
+      await updateLeadStatus(lead.id, 'privacy_blocked');
+      await markLeadDMSent(lead.id); // Prevents infinite retry loop
+      return { success: false, reason: 'privacy_blocked' };
+    }
+
     throw new Error(
       `Conversation form not found (page: "${pageTitle}"). ` +
       `The user @${lead.poster_username} may not exist or your account lacks messaging permissions.`
