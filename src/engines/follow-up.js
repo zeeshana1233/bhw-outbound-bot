@@ -69,13 +69,14 @@ async function sendFollowUp(fu, opts = {}) {
     await bhwSession.navigateTo(bhw_conversation_url);
     await randomDelay(2000, 4000);
 
-    // ── Live Page Check: Did the client reply? ───────────────────────────
+    // ── Live Page Check: Did the client EVER reply? ───────────────────────
     const messages = await readConversationMessages(page).catch(() => []);
     if (messages.length > 0) {
-      const latestMessage = messages[messages.length - 1];
-      if (!latestMessage.isOurs) {
+      // Find if there is ANY message in the chat from the client
+      const clientMessage = messages.find(m => !m.isOurs);
+      if (clientMessage) {
         logger.info(`  ⏸️  Client @${lead_poster_username} ALREADY REPLIED! Pausing follow-up #${id}`);
-        logger.info(`      Latest message: "${latestMessage.text.substring(0, 100)}..."`);
+        logger.info(`      Client message: "${clientMessage.text.substring(0, 100)}..."`);
         
         await pauseFollowUpsForConversation(conversation_id, 'client_replied_live').catch(() => {});
         
@@ -87,8 +88,8 @@ async function sendFollowUp(fu, opts = {}) {
           `📌 Job: "${lead_title}"`,
           `🔗 ${bhw_conversation_url}`,
           '',
-          `💬 Latest message from client:`,
-          `"${latestMessage.text.substring(0, 300)}"`,
+          `💬 Message from client:`,
+          `"${clientMessage.text.substring(0, 300)}"`,
           '',
           `✅ Follow-up was safely paused. Check BHW conversation!`,
         ].join('\n')).catch(() => {});
