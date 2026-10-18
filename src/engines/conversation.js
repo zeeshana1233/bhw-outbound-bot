@@ -165,28 +165,53 @@ export async function sendConversationReply(page, replyText) {
   // Review pause
   await sleep(randomDelay(1800, 4000));
 
-  // Submit
-  let submitted = false;
-  for (const sel of SUBMIT_SELECTORS) {
-    const btn = await page.$(sel);
-    if (btn) {
-      await smoothScrollToElement(page, sel);
-      await sleep(randomDelay(300, 600));
-      await moveMouseAndClick(page, sel);
-      submitted = true;
-      logger.info(`  Clicked send: ${sel}`);
-      break;
+  // Submit using reliable synthetic events + form fallback
+  const submitResult = await page.evaluate((editorSelector) => {
+    const ed = document.querySelector(editorSelector);
+    let form = ed ? ed.closest('form') : null;
+    if (!form) {
+      form = document.querySelector('form[action*="conversation"]') ||
+             document.querySelector('form[action*="reply"]') ||
+             document.querySelector('form');
     }
-  }
-  if (!submitted) {
+
+    const btn = form
+      ? (form.querySelector('button.button--primary[type="submit"]') ||
+         form.querySelector('[data-xf-click="submit"]') ||
+         form.querySelector('button[type="submit"]') ||
+         form.querySelector('input[type="submit"]'))
+      : (document.querySelector('button.button--primary[type="submit"]') ||
+         document.querySelector('button[data-xf-click="submit"]'));
+
+    if (btn) {
+      btn.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      const opts = { bubbles: true, cancelable: true, view: window };
+      btn.dispatchEvent(new MouseEvent('mouseenter', opts));
+      btn.dispatchEvent(new MouseEvent('mousemove', opts));
+      btn.dispatchEvent(new MouseEvent('mousedown', opts));
+      btn.dispatchEvent(new MouseEvent('mouseup',   opts));
+      btn.dispatchEvent(new MouseEvent('click',     opts));
+      return 'btn_events:' + (btn.textContent.trim().slice(0, 30));
+    }
+
+    if (form) {
+      try { form.requestSubmit(); return 'form_requestSubmit'; }
+      catch (e) { form.submit(); return 'form_submit'; }
+    }
+    return 'nothing_found';
+  }, editorSel);
+
+  logger.info(`  Submit result: ${submitResult}`);
+
+  if (submitResult === 'nothing_found') {
     await page.focus(editorSel);
     await page.keyboard.down('Control');
     await page.keyboard.press('Enter');
     await page.keyboard.up('Control');
-    logger.info('  Sent via Ctrl+Enter.');
+    logger.info('  Sent via Ctrl+Enter fallback.');
   }
 
-  await sleep(randomDelay(2500, 5000));
+  await sleep(randomDelay(3500, 6000));
 }
 
 // ─────────────────────────────────────────────────
