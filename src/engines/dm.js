@@ -269,6 +269,8 @@ export async function sendDM(lead, dmText, opts = {}) {
     const recentlyDMed = await wasUserDMedRecently(lead.poster_username, 30);
     if (recentlyDMed) {
       logger.warn(`@${lead.poster_username} was already DM'd within the last 30 days (cross-pipeline dedup) — skipping.`);
+      await updateLeadStatus(lead.id, 'skipped_recently_dmed').catch(() => {});
+      await markLeadDMSent(lead.id).catch(() => {}); // Prevents infinite retry loop
       return { success: false, reason: 'recently_dmed' };
     }
   } catch (dedupErr) {

@@ -115,7 +115,13 @@ async function processQualifiedLeads() {
           reportLines.push(`📝 **Subject:** ${subject}`);
         }
 
-        if (dmText) {
+        if (dmResult.reason === 'recently_dmed') {
+          reportLines.push('');
+          reportLines.push(`⏭ *Skipped: User was already contacted within the last 30 days.*`);
+        } else if (dmResult.reason === 'privacy_blocked') {
+          reportLines.push('');
+          reportLines.push(`🚫 *Skipped: User direct messages are closed (privacy settings).*`);
+        } else if (dmText) {
           reportLines.push('');
           reportLines.push(`📩 *Message 1 (Instant DM):*`);
           reportLines.push(dmText);
@@ -124,7 +130,7 @@ async function processQualifiedLeads() {
           reportLines.push(`⚠️ DM send attempt finished (check logs)`);
         }
 
-        if (followUpText) {
+        if (followUpText && dmResult.success) {
           reportLines.push('');
           reportLines.push(`⏰ *Message 2 (Follow-Up — Scheduled for 24–72h):*`);
           reportLines.push(followUpText);
