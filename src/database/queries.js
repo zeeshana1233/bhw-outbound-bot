@@ -226,6 +226,26 @@ export async function incrementConversationMessages(conversationId, direction) {
   return result.rows[0];
 }
 
+
+/**
+ * Look up the active BHW conversation URL for a lead by their username.
+ * Used by Discord /reply command to find the chat link.
+ */
+export async function getConversationByUsername(username) {
+  if (!username) return null;
+  const cleanUser = username.replace(/^@/, '').trim();
+  const sql = `
+    SELECT c.*, l.poster_username, l.title as lead_title
+    FROM conversations c
+    JOIN leads l ON l.id = c.lead_id
+    WHERE LOWER(l.poster_username) = LOWER($1)
+    ORDER BY c.created_at DESC
+    LIMIT 1
+  `;
+  const result = await query(sql, [cleanUser]);
+  return result.rows[0] || null;
+}
+
 export async function getConversationByLeadId(leadId) {
   const sql = 'SELECT * FROM conversations WHERE lead_id = $1';
   const result = await query(sql, [leadId]);
@@ -514,10 +534,16 @@ export async function getDailyStats(date = new Date()) {
 
       (SELECT COUNT(*)
          FROM dms
+        WHERE direction = 'inbound'
+          AND DATE(sent_at) = $1
+      ) AS client_replies,
+
+      (SELECT COUNT(*)
+         FROM dms
         WHERE direction = 'outbound'
           AND message_type = 'reply'
           AND DATE(sent_at) = $1
-      ) AS replied,
+      ) AS team_replies,
 
       (SELECT COUNT(*)
          FROM conversations
@@ -536,7 +562,9 @@ export async function getDailyStats(date = new Date()) {
   return {
     leadsScraped: parseInt(row.leads_scraped)  || 0,
     dmsSent:      parseInt(row.dms_sent)       || 0,
-    replied:      parseInt(row.replied)        || 0,
+    clientReplies: parseInt(row.client_replies) || 0,
+    teamReplies:   parseInt(row.team_replies)   || 0,
+    replied:       parseInt(row.team_replies)   || 0,
     handoffs:     parseInt(row.handoffs)       || 0,
     conversions:  parseInt(row.conversions)    || 0,
     date:         new Date(date).toLocaleDateString('en-GB'),

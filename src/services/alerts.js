@@ -289,6 +289,31 @@ export async function sendCallReminder(username, convUrl, urgentLine, context = 
  * Send a daily summary report via Discord.
  * @param {Object} stats - { leadsScraped, dmsSent, replied, handoffs, conversions }
  */
+
+/**
+ * Send an inbound client reply alert card to the dedicated client inbox channel.
+ */
+export async function sendClientReplyAlert({ username, leadTitle, convUrl, clientMessage }) {
+  const targetChannel = config.discord.clientInboxChannelId || config.discord.channelId;
+  const lines = [
+    '📬 **NEW CLIENT REPLY!**',
+    '',
+    `👤 **User:** @${username}`,
+    leadTitle ? `📌 **Job:** "${leadTitle}"` : '',
+    `🔗 **BHW Link:** ${convUrl}`,
+    '',
+    '💬 **Client Message:**',
+    `"${clientMessage}"`,
+    '',
+    '👉 **To reply from Discord:**',
+    `Type: \`/reply user:${username} message:your message here\``,
+  ].filter(Boolean);
+
+  const text = lines.join('\n');
+  logger.info(`[Alerts] Forwarding client reply from @${username} to client inbox channel.`);
+  return sendAlert(text, targetChannel);
+}
+
 export async function sendDailyReport(stats = {}) {
   const {
     leadsScraped  = 0,
@@ -305,7 +330,8 @@ export async function sendDailyReport(stats = {}) {
     '',
     `🔍 Leads scraped:    ${leadsScraped}`,
     `📨 DMs sent:         ${dmsSent}`,
-    `💬 Replies sent:     ${replied}`,
+    `💬 Client replies:  ${stats.clientReplies !== undefined ? stats.clientReplies : 0}`,
+    `✍️ Team replies:    ${stats.teamReplies !== undefined ? stats.teamReplies : replied}`,
     `🚨 Handoffs:         ${handoffs}`,
     `✅ Conversions:      ${conversions}`,
   ];

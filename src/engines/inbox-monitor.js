@@ -32,7 +32,11 @@ import {
   incrementConversationMessages,
   logActivity,
   pauseFollowUpsForConversation,
+  pauseFollowUpsForLead,
+  pauseFollowUpById,
 } from '../database/queries.js';
+import alerts from '../services/alerts.js';
+import { readConversationMessages } from './conversation.js';
 
 const BHW_CONVERSATIONS_URL = 'https://www.blackhatworld.com/conversations/';
 
@@ -147,6 +151,55 @@ export async function checkAndReplyToInbox(opts = {}) {
 
       if (!lead) {
         logger.info(`  @${conv.username} not in leads DB — replying anyway (no DB link).`);
+      }
+
+      // ── notifyOnly Mode: Forward to Discord #bhw-client-inbox & Pause Follow-ups ──
+      if (opts.notifyOnly) {
+        try {
+          await page.goto(conv.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await sleep(randomDelay(1500, 3000));
+
+          const msgs = await readConversationMessages(page).catch(() => []);
+          const lastMsg = msgs[msgs.length - 1];
+
+          if (lastMsg && !lastMsg.isOurs) {
+            logger.info(`  💬 Inbound client message from @${conv.username}: "${lastMsg.text.substring(0, 80)}..."`);
+
+            // 1. Immediately pause any active follow-ups for this lead/conversation
+            if (lead?.id) await pauseFollowUpsForLead(lead.id, 'client_replied_live').catch(() => {});
+            if (dbConv?.id) await pauseFollowUpsForConversation(dbConv.id, 'client_replied_live').catch(() => {});
+
+            // 2. Record inbound message in DB
+            if (dbConv?.id) {
+              await incrementConversationMessages(dbConv.id, 'inbound').catch(() => {});
+              await createDM({
+                leadId: lead?.id || null,
+                conversationId: dbConv.id,
+                messageType: 'reply',
+                direction: 'inbound',
+                subject: conv.subject || 'Direct Message',
+                body: lastMsg.text,
+                sentAt: new Date(),
+              }).catch(() => {});
+            }
+
+            // 3. Dispatch alert card to #bhw-client-inbox
+            await alerts.sendClientReplyAlert({
+              username: conv.username,
+              leadTitle: lead?.title || conv.subject,
+              convUrl: conv.url,
+              clientMessage: lastMsg.text,
+            }).catch(err => logger.error(`Failed to send client reply alert: ${err.message}`));
+
+            replied++;
+          } else {
+            logger.info(`  Last message for @${conv.username} is already ours or empty — skipping alert.`);
+          }
+        } catch (readErr) {
+          logger.error(`  Failed inspecting unread conv for @${conv.username}: ${readErr.message}`);
+        }
+        await sleep(randomDelay(2000, 4000));
+        continue;
       }
 
       // Handle the conversation (navigate → read → generate → send)

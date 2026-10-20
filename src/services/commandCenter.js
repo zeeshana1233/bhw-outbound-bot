@@ -53,12 +53,16 @@ import {
   disqualifyLead,
   convertLead,
   pauseFollowUpsForUsername,
+  getConversationByUsername,
+  createDM,
+  incrementConversationMessages,
   getNicheScoutDayStats,
   getNicheScoutWeekStats,
   getNicheScoutSkippedPosts,
 } from '../database/queries.js';
 import { config } from '../config/config.js';
 import { query } from '../database/init.js';
+import { sendConversationReply } from '../engines/conversation.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // REPLY HELPER — sends to the Discord control channel
@@ -96,6 +100,50 @@ async function replyToInteraction(interaction, text) {
 // ─────────────────────────────────────────────────────────────────────────────
 // COMMAND HANDLERS
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Reply to a client on BHW directly from Discord.
+ * Usage: /reply username:<user> message:<text>
+ */
+async function handleReply(username, replyText) {
+  if (!username || !replyText) return '⚠️ Please provide both username and message.';
+
+  const cleanUser = username.replace(/^@/, '').trim();
+  const conv = await getConversationByUsername(cleanUser);
+
+  if (!conv || !conv.bhw_conversation_url) {
+    return `⚠️ Could not find an active BHW conversation for @${cleanUser} in the database.`;
+  }
+
+  logger.info(`[CommandCenter] Sending team reply to @${cleanUser} via BHW...`);
+  try {
+    await bhwSession.ensureAuthenticated();
+    const page = bhwSession.getPage();
+
+    await page.goto(conv.bhw_conversation_url, { waitUntil: 'domcontentloaded', timeout: 35000 });
+    await bhwSession.randomDelay ? await bhwSession.randomDelay(2000, 4000) : null;
+
+    await sendConversationReply(page, replyText);
+
+    // Record outbound team reply in database
+    await createDM({
+      leadId: conv.lead_id || null,
+      conversationId: conv.id,
+      messageType: 'reply',
+      direction: 'outbound',
+      subject: conv.lead_title || 'Direct Message',
+      body: replyText,
+      sentAt: new Date(),
+    }).catch(() => {});
+
+    await incrementConversationMessages(conv.id, 'outbound').catch(() => {});
+
+    return `✅ **Reply sent to @${cleanUser} on BHW!**\n\n💬 *Message:* "${replyText}"`;
+  } catch (err) {
+    logger.error(`[CommandCenter] Failed sending reply to @${cleanUser}:`, err.message);
+    return `❌ **Failed to send reply to @${cleanUser} on BHW:** ${err.message}`;
+  }
+}
 
 async function handleStatus() {
   const state = botState.summary();
@@ -318,6 +366,7 @@ async function handleHelp() {
     `  /convert username:<user>    — mark as won`,
     `  /skip username:<user>       — disqualify lead`,
     `  /pausefollowup username:<user> — stop chasing a lead`,
+    `  /reply username:<user> message:<text> — reply to client on BHW`,
   ];
   return help.join('\n');
 }
@@ -372,6 +421,19 @@ const SLASH_COMMANDS = [
         .setDescription('BHW username to pause follow-ups for')
         .setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName('reply')
+    .setDescription('Send a reply message to a client on BHW')
+    .addStringOption(opt =>
+      opt.setName('username')
+        .setDescription('BHW username of the client')
+        .setRequired(true)
+    )
+    .addStringOption(opt =>
+      opt.setName('message')
+        .setDescription('Your reply text to send')
+        .setRequired(true)
+    ),
   new SlashCommandBuilder().setName('forcereport').setDescription('Send the daily report right now'),
   new SlashCommandBuilder().setName('community').setDescription('Community comment stats'),
   new SlashCommandBuilder().setName('help').setDescription('Show all commands'),
@@ -414,7 +476,9 @@ export async function startCommandCenter(guildId = process.env.DISCORD_GUILD_ID 
   // ── Channel guard — only handle interactions from the configured channel ──
   const isFromChannel = (interaction) => {
     if (!channelId) return true; // dev mode: accept all channels
-    return String(interaction.channelId) === String(channelId);
+    const allowed = [String(channelId)];
+    if (config.discord.clientInboxChannelId) allowed.push(String(config.discord.clientInboxChannelId));
+    return allowed.includes(String(interaction.channelId));
   };
 
   // ── Interaction handler ───────────────────────────────────────────────────
@@ -465,6 +529,13 @@ export async function startCommandCenter(guildId = process.env.DISCORD_GUILD_ID 
           break;
         }
 
+        case 'reply': {
+          await interaction.deferReply();
+          const username = interaction.options.getString('username')?.replace(/^@/, '').trim();
+          const message  = interaction.options.getString('message');
+          responseText   = await handleReply(username, message);
+          break;
+        }
         default:
           responseText = `🤔 Unknown command \`/${cmd}\`.\nSend /help for the full command list.`;
       }

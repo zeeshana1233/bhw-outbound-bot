@@ -70,6 +70,7 @@ export const config = {
     channelId:           process.env.DISCORD_CHANNEL_ID          || '',
     guildId:             process.env.DISCORD_GUILD_ID             || '',
     dmAlertsChannelId:   process.env.DISCORD_DM_ALERTS_CHANNEL_ID || '',
+    clientInboxChannelId: process.env.DISCORD_CLIENT_INBOX_CHANNEL_ID || '',
     pipelineCChannelId:  process.env.PIPELINE_C_CHANNEL_ID      || '',
     nicheScoutChannelId: process.env.NICHE_SCOUT_CHANNEL_ID     || '',
   },

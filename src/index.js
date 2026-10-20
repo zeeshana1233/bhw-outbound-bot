@@ -7,7 +7,7 @@ import { BHWScraper } from './scraper/index.js';
 import { generateAndPostComment } from './engines/comment.js';
 import { config } from './config/config.js';
 import { generateAndSendDM } from './engines/dm.js';
-import { startInboxMonitor } from './engines/inbox-monitor.js';
+import { startInboxMonitor, checkAndReplyToInbox } from './engines/inbox-monitor.js';
 import { startFollowUpSystem } from './engines/follow-up.js';
 import { startCommunityCommenter } from './engines/community-commenter.js';
 import alerts from './services/alerts.js';
@@ -314,6 +314,14 @@ async function startScraperAndOutreachLoop() {
       await processQualifiedLeads().catch(err =>
         logger.error(`Outreach error: ${err.message}`)
       );
+
+      // ── Check BHW Inbox for client replies on every run (notify only, no AI auto-reply) ──
+      try {
+        logger.info('\n📬  Checking BHW inbox for client replies…');
+        await checkAndReplyToInbox({ notifyOnly: true });
+      } catch (inboxErr) {
+        logger.error(`Inbox check error: ${inboxErr.message}`);
+      }
     }
 
     // ── Pipeline D — Niche Comment Scout (after Hire-a-Freelancer scrape) ─
