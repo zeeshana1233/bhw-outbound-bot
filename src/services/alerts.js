@@ -551,4 +551,5 @@ export default {
   sendPipelineCJobAlert,
   sendNicheScoutAlert,
   sendNicheScoutDailyReport,
+  sendClientReplyAlert,
 };
