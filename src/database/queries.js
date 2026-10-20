@@ -373,10 +373,12 @@ export async function getResumableFollowUps() {
 
 /**
  * Pause all pending follow-ups for a conversation.
+ * Also supports fallback to match by leadId or directly pause by followUpId.
  * Called when an inbound reply is received — we don't chase someone
  * who is actively talking to us.
  */
 export async function pauseFollowUpsForConversation(conversationId, reason = 'reply_received') {
+  if (!conversationId) return [];
   const sql = `
     UPDATE follow_ups
     SET status = 'paused', paused_reason = $1, updated_at = CURRENT_TIMESTAMP
@@ -386,6 +388,38 @@ export async function pauseFollowUpsForConversation(conversationId, reason = 're
   `;
   const result = await query(sql, [reason, conversationId]);
   return result.rows;
+}
+
+/**
+ * Pause all pending follow-ups for a specific lead.
+ */
+export async function pauseFollowUpsForLead(leadId, reason = 'reply_received') {
+  if (!leadId) return [];
+  const sql = `
+    UPDATE follow_ups
+    SET status = 'paused', paused_reason = $1, updated_at = CURRENT_TIMESTAMP
+    WHERE lead_id = $2
+      AND status = 'pending'
+    RETURNING id
+  `;
+  const result = await query(sql, [reason, leadId]);
+  return result.rows;
+}
+
+/**
+ * Pause a specific follow-up by its primary key ID.
+ */
+export async function pauseFollowUpById(followUpId, reason = 'reply_received') {
+  if (!followUpId) return null;
+  const sql = `
+    UPDATE follow_ups
+    SET status = 'paused', paused_reason = $1, updated_at = CURRENT_TIMESTAMP
+    WHERE id = $2
+      AND status = 'pending'
+    RETURNING *
+  `;
+  const result = await query(sql, [reason, followUpId]);
+  return result.rows[0];
 }
 
 /**

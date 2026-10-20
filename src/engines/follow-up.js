@@ -78,7 +78,9 @@ async function sendFollowUp(fu, opts = {}) {
         logger.info(`  ⏸️  Client @${lead_poster_username} ALREADY REPLIED! Pausing follow-up #${id}`);
         logger.info(`      Client message: "${clientMessage.text.substring(0, 100)}..."`);
         
-        await pauseFollowUpsForConversation(conversation_id, 'client_replied_live').catch(() => {});
+        await pauseFollowUpById(id, 'client_replied_live').catch(() => {});
+        if (lead_id) await pauseFollowUpsForLead(lead_id, 'client_replied_live').catch(() => {});
+        if (conversation_id) await pauseFollowUpsForConversation(conversation_id, 'client_replied_live').catch(() => {});
         
         // Notify Discord that the client replied so Zeeshan knows
         await alerts.sendRawAlert([
@@ -155,7 +157,9 @@ export async function processFollowUps(opts = {}) {
         // They replied — skip ALL pending follow-ups for this conversation.
         // No point chasing someone who is already in active dialogue.
         logger.info(`  ⏸️  Skipping follow-up #${fu.id} for @${fu.lead_poster_username} — they replied, pausing entire sequence (conv #${fu.conversation_id})`);
-        await pauseFollowUpsForConversation(fu.conversation_id, 'reply_received').catch(() => {});
+        await pauseFollowUpById(fu.id, 'reply_received').catch(() => {});
+        if (fu.lead_id) await pauseFollowUpsForLead(fu.lead_id, 'reply_received').catch(() => {});
+        if (fu.conversation_id) await pauseFollowUpsForConversation(fu.conversation_id, 'reply_received').catch(() => {});
         paused++;
         continue;
       }
