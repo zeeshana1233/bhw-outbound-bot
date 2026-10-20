@@ -121,7 +121,7 @@ async function handleReply(username, replyText) {
     const page = bhwSession.getPage();
 
     await page.goto(conv.bhw_conversation_url, { waitUntil: 'domcontentloaded', timeout: 35000 });
-    await bhwSession.randomDelay ? await bhwSession.randomDelay(2000, 4000) : null;
+    await new Promise(r => setTimeout(r, 2000));
 
     await sendConversationReply(page, replyText);
 
