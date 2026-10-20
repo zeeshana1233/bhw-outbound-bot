@@ -64,18 +64,50 @@ async function processQualifiedLeads() {
     logger.info(`\n  Lead #${lead.id}: "${lead.title?.slice(0, 60)}" by @${lead.poster_username || 'unknown'}`);
 
     try {
-      // Step 1 — Public Comment: Paused (DM-only mode)
+      // Step 1 — Public Comment: Development jobs only (when commenting is enabled)
+      const isDevJob = Array.isArray(lead.tags) && lead.tags.includes('development');
+
       if (config.bot?.commentingEnabled) {
-        logger.info(`  Public comment posting enabled by config...`);
-        const commentResult = await generateAndPostComment(lead, { dryRun: botState.isDryRun() });
-        if (!commentResult.success) {
-          logger.warn(`  Comment failed — skipping DM for lead #${lead.id}`);
-          continue;
+        if (isDevJob) {
+          logger.info(`  💻 Development job detected — posting public comment...`);
+          const commentResult = await generateAndPostComment(lead, { dryRun: botState.isDryRun() });
+          
+          if (commentResult && commentResult.success) {
+            // Send dedicated Comment Alert Card to the same DM alerts channel
+            const commentCardLines = [
+              `💬 **Public Comment Posted!**`,
+              '',
+              `📌 **Post:** "${lead.title}"`,
+              `🔗 **Thread:** ${commentResult.commentUrl || lead.thread_url}`,
+              `👤 **Poster:** @${lead.poster_username || 'unknown'}`,
+              `🤖 **AI Score:** ${Math.round(lead.niche_match_score || 0)}% (Development Job)`,
+            ];
+            if (commentResult.commentText) {
+              commentCardLines.push('', `📝 **Comment Posted:**`, commentResult.commentText);
+            }
+            await alerts.sendOutreachReport(commentCardLines.join('\n')).catch(() => {});
+
+            // Human pause between comment and DM
+            const pauseMs = randomDelay(2 * 60 * 1000, 4 * 60 * 1000);
+            logger.info(`  ⏳  Pausing ~${Math.round(pauseMs / 60000)} min before DM…`);
+            await sleep(pauseMs);
+          } else {
+            logger.warn(`  Comment attempt failed or incomplete for lead #${lead.id}`);
+          }
+        } else {
+          logger.info(`  ℹ️  Public comment skipped (non-development job: SEO, Design, Writing, or VA)`);
+          // Send dedicated "Comment Skipped (Non-Dev Job)" card to DM alerts channel
+          const skipCardLines = [
+            `ℹ️ **Public Comment Skipped (Non-Dev Job)**`,
+            '',
+            `📌 **Post:** "${lead.title}"`,
+            `🔗 **Thread:** ${lead.thread_url}`,
+            `👤 **Poster:** @${lead.poster_username || 'unknown'}`,
+            `🏷️ **Category:** Non-development (SEO, Design, Content, or VA)`,
+            `👉 *Proceeding to direct message (DM) outreach only.*`,
+          ];
+          await alerts.sendOutreachReport(skipCardLines.join('\n')).catch(() => {});
         }
-        // Human pause between comment and DM if commenting was active
-        const pauseMs = randomDelay(2 * 60 * 1000, 4 * 60 * 1000);
-        logger.info(`  ⏳  Pausing ~${Math.round(pauseMs / 60000)} min before DM…`);
-        await sleep(pauseMs);
       } else {
         logger.info(`  ℹ️  Public forum commenting is PAUSED (DM-only mode active)`);
       }

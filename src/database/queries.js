@@ -31,9 +31,19 @@ export async function createLead(leadData) {
   return existing.rows[0];
 }
 
-export async function updateLeadQualification(leadId, isQualified, reason, score) {
+export async function updateLeadQualification(leadId, isQualified, reason, score, tags = null) {
   // score may be passed as 0.0–1.0 (confidence) or 0–100 (legacy) — normalise to integer
   const normScore = score <= 1 && score > 0 ? Math.round(score * 100) : Math.round(score || 0);
+  if (tags && Array.isArray(tags)) {
+    const sql = `
+      UPDATE leads 
+      SET is_qualified = $1, qualification_reason = $2, niche_match_score = $3, tags = $4, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $5
+      RETURNING *
+    `;
+    const result = await query(sql, [isQualified, reason, normScore, tags, leadId]);
+    return result.rows[0];
+  }
   const sql = `
     UPDATE leads 
     SET is_qualified = $1, qualification_reason = $2, niche_match_score = $3, updated_at = CURRENT_TIMESTAMP

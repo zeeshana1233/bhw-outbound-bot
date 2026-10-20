@@ -220,10 +220,15 @@ Your goal is to qualify ANY genuine hiring request where an individual or busine
 Return ONLY valid JSON — no explanation, no code fences:
 {
   "qualified": true | false,
+  "is_development": true | false,
   "confidence": 0.00 to 1.00,
   "reason": "one concise sentence explaining why",
   "pitch_angle": "if qualified: how Zeeshan should position himself for this job; else empty string"
 }
+
+DEVELOPMENT CATEGORY RULE:
+  "is_development": true — if the job involves coding, scripts, bots, web scrapers, APIs, web/mobile development (WordPress, Shopify, React, Node, Python, PHP, etc.), or technical software automation.
+  "is_development": false — if the job is for SEO, backlinks, PBNs, content writing, graphic design, video editing, virtual assistance, data entry, social media, or other non-coding services.
 
 EMOJI / SYMBOL RULE — READ THIS FIRST:
   BHW posts frequently use ❌ and ✅ as DECORATIVE BULLET POINTS, not as true negatives vs positives.
@@ -297,11 +302,12 @@ Evaluate this post:`;
         : 'skip';
 
     return {
-      qualified:   result.qualified === true && confidence >= 0.40,
+      qualified:      result.qualified === true && confidence >= 0.40,
+      is_development: result.is_development === true,
       confidence,
       tier,
-      reason:      result.reason      || 'No reason provided',
-      pitch_angle: result.pitch_angle || '',
+      reason:         result.reason      || 'No reason provided',
+      pitch_angle:    result.pitch_angle || '',
     };
   } catch (err) {
     logger.error('[aiEngine] qualifyLead parse error:', err.message);

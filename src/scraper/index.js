@@ -736,12 +736,18 @@ class BHWScraper {
         ip.age = threadAgeCategory;
       }
 
+      // Tag as 'development' if qualified as a development/coding job
+      const updatedTags = qualification.is_development
+        ? Array.from(new Set([...(leadData.tags || []), 'development']))
+        : (leadData.tags || []);
+
       // Update lead with qualification (skipped score in C-only still written for DB consistency)
       await updateLeadQualification(
         lead.id,
         qualification.qualified,
         qualification.reason,
-        qualification.confidence
+        qualification.confidence,
+        updatedTags
       );
 
       // ── Pipeline C: Today-only new job notifier ──────────────────────────
