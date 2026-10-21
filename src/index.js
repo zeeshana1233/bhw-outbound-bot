@@ -2,11 +2,12 @@ import dotenv from 'dotenv';
 import logger from './utils/logger.js';
 import { sleep, randomDelay, shouldSendDM, isActiveHours } from './utils/helpers.js';
 import { initDatabase } from './database/init.js';
-import { getQualifiedLeadsToContact, getDailyStats, getDailyActionCounts, getNicheScoutDayStats, getNicheScoutWeekStats, getNicheScoutSkippedPosts } from './database/queries.js';
+import { getQualifiedLeadsToContact, getWtbLeadsToContact, getDailyStats, getDailyActionCounts, getNicheScoutDayStats, getNicheScoutWeekStats, getNicheScoutSkippedPosts } from './database/queries.js';
 import { BHWScraper } from './scraper/index.js';
 import { generateAndPostComment } from './engines/comment.js';
 import { config } from './config/config.js';
 import { generateAndSendDM } from './engines/dm.js';
+import { scrapeWtbThreads } from './scraper/wtbScraper.js';
 import { startInboxMonitor, checkAndReplyToInbox } from './engines/inbox-monitor.js';
 import { startFollowUpSystem } from './engines/follow-up.js';
 import { startCommunityCommenter } from './engines/community-commenter.js';
@@ -189,6 +190,66 @@ async function processQualifiedLeads() {
   logger.info('\n  ✅  Outreach round complete.');
 }
 
+// ── processWtbLeads ────────────────────────────────────────────────────────
+/**
+ * Processes pending Want-to-Buy (WTB) leads:
+ *  - Honors WTB_DRY_RUN (previews DM in Discord without sending on BHW)
+ *  - Honors WTB_COMMENTS_ENABLED (paused by default)
+ *  - Enforces 1 DM per scrape run for human pacing
+ */
+async function processWtbLeads() {
+  if (!config.wtb?.enabled) return { outreachCount: 0, dryRun: true };
+
+  const wtbLeads = await getWtbLeadsToContact();
+  if (!wtbLeads || wtbLeads.length === 0) {
+    logger.info('    [WTB] No pending WTB leads to contact this round.');
+    return { outreachCount: 0, dryRun: config.wtb.dryRun };
+  }
+
+  const lead = wtbLeads[0];
+  const isDryRun = config.wtb.dryRun;
+  logger.info(`\n  🎯  [WTB] Processing WTB lead #${lead.id}: "${lead.title?.slice(0, 60)}" by @${lead.poster_username || 'unknown'} [Mode: ${isDryRun ? 'DRY RUN' : 'LIVE'}]`);
+
+  try {
+    // Optional public comment if enabled
+    if (config.wtb?.commentsEnabled) {
+      logger.info(`  [WTB] Public commenting enabled — posting comment on WTB thread...`);
+      const commentResult = await generateAndPostComment(lead, { dryRun: isDryRun });
+      if (commentResult?.success && commentResult.commentText) {
+        await alerts.sendOutreachReport([
+          '💬 **[WTB] Public Comment Posted!**',
+          '',
+          `📌 **Thread:** "${lead.title}"`,
+          `🔗 **URL:** ${commentResult.commentUrl || lead.thread_url}`,
+          `👤 **Poster:** @${lead.poster_username || 'unknown'}`,
+          '🏷️ **Category:** Want to Buy (WTB) Section',
+          '',
+          '📝 **Comment Posted:**',
+          commentResult.commentText,
+        ].join('\n')).catch(() => {});
+      }
+    }
+
+    // Generate & send DM (or preview if dryRun)
+    const dmResult = await generateAndSendDM(lead, { dryRun: isDryRun });
+    if (dmResult?.success) {
+      await alerts.sendWtbOutreachReport({
+        title: lead.title,
+        threadUrl: lead.thread_url,
+        posterUsername: lead.poster_username,
+        message1: dmResult.dmText,
+        message2: dmResult.followUpText,
+        dryRun: isDryRun,
+      }).catch(err => logger.warn(`[WTB] Discord outreach report failed: ${err.message}`));
+    }
+
+    return { outreachCount: 1, dryRun: isDryRun };
+  } catch (err) {
+    logger.error(`  [WTB] Error processing lead #${lead.id}: ${err.message}`);
+    return { outreachCount: 0, dryRun: isDryRun };
+  }
+}
+
 // ── Unified scrape + outreach loop ───────────────────────────────────────────
 /**
  * One loop handles both scraping and outreach:
@@ -315,7 +376,24 @@ async function startScraperAndOutreachLoop() {
         logger.error(`Outreach error: ${err.message}`)
       );
 
-      // ── Check BHW Inbox for client replies on every run (notify only, no AI auto-reply) ──
+      // ── 2. Want to Buy (WTB) Outreach Step ───────────────────────────
+      let wtbStats = null;
+      if (config.wtb?.enabled) {
+        try {
+          const wtbScrapeResult = await scrapeWtbThreads();
+          const wtbOutreachResult = await processWtbLeads();
+          wtbStats = {
+            inspected: wtbScrapeResult.inspected || 0,
+            todayFound: wtbScrapeResult.todayFound || 0,
+            outreachCount: wtbOutreachResult.outreachCount || 0,
+            dryRun: wtbOutreachResult.dryRun,
+          };
+        } catch (wtbErr) {
+          logger.error(`[WTB] Loop error: ${wtbErr.message}`);
+        }
+      }
+
+      // ── 3. Check BHW Inbox for client replies on every run (notify only, no AI auto-reply) ──
       try {
         logger.info('\n📬  Checking BHW inbox for client replies…');
         await checkAndReplyToInbox({ notifyOnly: true });
@@ -345,6 +423,7 @@ async function startScraperAndOutreachLoop() {
         newLeadsCount:  scrapeResult.newProcessed || 0,
         qualifiedCount: scrapeResult.approved || 0,
         nextMinStr,
+        wtbStats: typeof wtbStats !== 'undefined' ? wtbStats : null,
       }).catch(err => logger.warn(`[Heartbeat] Cycle heartbeat failed: ${err.message}`));
     }
 

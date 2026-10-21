@@ -132,4 +132,14 @@ export const config = {
     // so next cycle picks fresh targets. Flip to false when ready to go live.
     previewMode:        process.env.OUTREACH_PREVIEW_MODE === 'true',
   },
+  // ── Want to Buy (WTB) Module ───────────────────────────────────────────
+  wtb: {
+    enabled:          process.env.WTB_ENABLED === 'true',
+    dryRun:           process.env.WTB_DRY_RUN !== 'false', // default true (safe preview mode)
+    todayOnly:        process.env.WTB_TODAY_ONLY !== 'false', // default true (today's posts only)
+    commentsEnabled:  process.env.WTB_COMMENTS_ENABLED === 'true', // default false (comments paused)
+    dailyCap:         parseInt(process.env.WTB_DAILY_DM_CAP) || 15,
+    maxPerRun:        parseInt(process.env.WTB_MAX_PER_RUN) || 1,
+    url:              process.env.WTB_URL || 'https://www.blackhatworld.com/forums/want-to-buy.92/',
+  },
 };

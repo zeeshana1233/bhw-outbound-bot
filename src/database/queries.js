@@ -141,6 +141,23 @@ export async function getQualifiedLeadsToContact() {
     SELECT * FROM leads 
     WHERE is_qualified = true 
     AND dm_sent = false 
+    AND (tags IS NULL OR NOT ('wtb' = ANY(tags)))
+    AND (post_date >= CURRENT_DATE OR discovered_at >= CURRENT_DATE)
+    ORDER BY discovered_at DESC
+    LIMIT 1
+  `;
+  const result = await query(sql);
+  return result.rows;
+}
+
+/**
+ * Get next pending WTB lead to contact (1 DM per run pacing).
+ */
+export async function getWtbLeadsToContact() {
+  const sql = `
+    SELECT * FROM leads 
+    WHERE dm_sent = false 
+    AND 'wtb' = ANY(tags)
     AND (post_date >= CURRENT_DATE OR discovered_at >= CURRENT_DATE)
     ORDER BY discovered_at DESC
     LIMIT 1

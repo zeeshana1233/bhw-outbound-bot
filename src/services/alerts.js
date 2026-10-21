@@ -89,20 +89,27 @@ export async function sendLeadDisqualifiedAlert({ title, url, posterUsername, re
 /**
  * Send a cycle completion status / heartbeat alert to the DM channel after every scrape run.
  */
-export async function sendScraperCycleHeartbeat({ runCount, runTs, inspectedCount, newLeadsCount, qualifiedCount, nextMinStr }) {
+export async function sendScraperCycleHeartbeat({ runCount, runTs, inspectedCount, newLeadsCount, qualifiedCount, nextMinStr, wtbStats }) {
   // Always send to the main bot control channel where startup & status messages go
   const channel = config.discord.channelId;
 
-  const text = [
+  const lines = [
     `🟢 **Everything Okay | Scraper Cycle Completed**`,
     '',
     `⏱ **Run:** #${runCount} | ${runTs}`,
-    `🔍 **Inspected Posts:** ${inspectedCount}`,
-    `🆕 **New Leads Found:** ${newLeadsCount}`,
-    `✅ **Qualified (AI Approved):** ${qualifiedCount}`,
-    `⏰ **Next Cycle:** in ~${nextMinStr} minutes (randomized window)`,
-  ].join('\n');
+    `📌 **HAF:** ${inspectedCount} Inspected | ${newLeadsCount} New | ${qualifiedCount} AI Approved`,
+  ];
 
+  if (wtbStats) {
+    const wtbOutreachStr = wtbStats.outreachCount !== undefined
+      ? ` | ${wtbStats.outreachCount} Outreach${wtbStats.dryRun ? ' (Dry Run)' : ''}`
+      : '';
+    lines.push(`🏷️ **WTB:** ${wtbStats.inspected || 0} Inspected | ${wtbStats.todayFound || 0} Today${wtbOutreachStr}`);
+  }
+
+  lines.push(`⏰ **Next Cycle:** in ~${nextMinStr} minutes (randomized window)`);
+
+  const text = lines.join('\n');
   logger.info(`[Alerts] Sending cycle heartbeat (run #${runCount}) to Discord`);
   return sendAlert(text, channel);
 }
@@ -293,6 +300,38 @@ export async function sendCallReminder(username, convUrl, urgentLine, context = 
 /**
  * Send an inbound client reply alert card to the dedicated client inbox channel.
  */
+
+/**
+ * Send WTB Outreach DM card (Preview for DRY RUN or Sent for LIVE).
+ */
+export async function sendWtbOutreachReport({ title, threadUrl, posterUsername, message1, message2, dryRun = true }) {
+  const channel = config.discord.dmAlertsChannelId || config.discord.channelId;
+  const header = dryRun
+    ? '🏷️ **[WTB] Outreach DM Preview** *(DRY RUN: Safe Mode)*'
+    : '🎯 **[WTB] Outreach DM Sent!**';
+
+  const lines = [
+    header,
+    '',
+    `📌 **Post:** "${title}"`,
+    `🔗 **Thread:** ${threadUrl}`,
+    `👤 **Poster:** @${posterUsername || 'unknown'}`,
+    '📅 **Posted:** Today',
+    '🏷️ **Category:** Want to Buy (WTB) Section',
+    '',
+    dryRun ? '📨 **Message 1 (Initial DM Preview):**' : '📨 **Message 1 (Sent DM):**',
+    message1 || '(no message generated)',
+  ];
+
+  if (dryRun && message2) {
+    lines.push('', '📩 **Message 2 (Scheduled Follow-Up Preview):**', message2);
+  }
+
+  const text = lines.join('\n');
+  logger.info(`[Alerts] Sending WTB outreach report for @${posterUsername || 'unknown'} (dryRun=${dryRun})`);
+  return sendAlert(text, channel);
+}
+
 export async function sendClientReplyAlert({ username, leadTitle, convUrl, clientMessage }) {
   const targetChannel = config.discord.clientInboxChannelId || config.discord.channelId;
   const lines = [
