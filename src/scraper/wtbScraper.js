@@ -1,7 +1,7 @@
 import logger from '../utils/logger.js';
 import { randomDelay, sleep, extractThreadId, getThreadAgeCategory } from '../utils/helpers.js';
 import bhwSession from '../utils/bhwSession.js';
-import { createLead, updateLeadQualification, getLeadById, markLeadContacted } from '../database/queries.js';
+import { createLead, updateLeadQualification, getLeadById } from '../database/queries.js';
 import { config } from '../config/config.js';
 
 const WTB_URL = config.wtb?.url || 'https://www.blackhatworld.com/forums/want-to-buy.92/';
