@@ -380,8 +380,11 @@ async function startScraperAndOutreachLoop() {
         logger.error(`Outreach error: ${err.message}`)
       );
 
-      // ── 2. Want to Buy (WTB) Outreach Step ───────────────────────────
-      let wtbStats = null;
+    }
+
+    // ── 2. Want to Buy (WTB) Outreach Step ───────────────────────────
+    let wtbStats = null;
+    if (!config.pipelineCOnly && scrapeResult && !scrapeResult.cloudflareBlocked) {
       if (config.wtb?.enabled) {
         try {
           const wtbScrapeResult = await scrapeWtbThreads();
@@ -397,6 +400,9 @@ async function startScraperAndOutreachLoop() {
         }
       }
 
+    }
+
+    if (!config.pipelineCOnly && scrapeResult && !scrapeResult.cloudflareBlocked) {
       // ── 3. Check BHW Inbox for client replies on every run (notify only, no AI auto-reply) ──
       try {
         logger.info('\n📬  Checking BHW inbox for client replies…');
