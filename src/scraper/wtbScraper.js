@@ -11,6 +11,10 @@ const WTB_URL = config.wtb?.url || 'https://www.blackhatworld.com/forums/want-to
  * Filters strictly for posts created TODAY and saves them directly to DB with tag ['wtb'].
  */
 export async function scrapeWtbThreads() {
+  return bhwSession.withLock(async () => _scrapeWtbThreadsInternal());
+}
+
+async function _scrapeWtbThreadsInternal() {
   if (!config.wtb?.enabled) {
     logger.info('  [WTB] Module disabled (WTB_ENABLED=false) — skipping scrape.');
     return { threads: [], inspected: 0, todayFound: 0 };
@@ -24,6 +28,7 @@ export async function scrapeWtbThreads() {
 
     // Navigate to WTB listing page
     await page.goto(WTB_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await page.waitForSelector('.structItem, .structItem--thread, .p-body-main', { timeout: 15000 }).catch(() => {});
     await sleep(randomDelay(2000, 3500));
 
     // Extract threads from page 1

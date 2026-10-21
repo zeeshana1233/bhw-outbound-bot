@@ -30,6 +30,10 @@ function randomLoopInterval() {
  * @returns {boolean}
  */
 async function sendFollowUp(fu, opts = {}) {
+  return bhwSession.withLock(async () => _sendFollowUpInternal(fu, opts));
+}
+
+async function _sendFollowUpInternal(fu, opts = {}) {
   const { id, conversation_id, lead_id, follow_up_number, message_text,
           lead_poster_username, bhw_conversation_url, lead_title } = fu;
 

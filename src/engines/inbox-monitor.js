@@ -100,6 +100,10 @@ async function scrapeConversationList(page) {
  * @param {boolean} [opts.dryRun] - generate replies but do not send
  */
 export async function checkAndReplyToInbox(opts = {}) {
+  return bhwSession.withLock(async () => _checkAndReplyToInboxInternal(opts));
+}
+
+async function _checkAndReplyToInboxInternal(opts = {}) {
   logger.info('📬 Inbox check started...');
 
   try {

@@ -162,6 +162,22 @@ class BHWSessionManager {
     this.sessionDown    = false;  // true while BHW cookies are known-dead
     this._alertedDown   = false;  // prevent alert spam — only fire once per outage
     this._healthTimer   = null;
+    this._lockPromise   = Promise.resolve();
+  }
+
+  /**
+   * Sequential mutex lock: guarantees only ONE task can use the shared Puppeteer page at a time.
+   */
+  async withLock(actionFn) {
+    const next = this._lockPromise.then(async () => {
+      try {
+        return await actionFn();
+      } catch (err) {
+        throw err;
+      }
+    });
+    this._lockPromise = next.catch(() => {});
+    return next;
   }
 
   // ── Browser init ──────────────────────────────────────────────────────

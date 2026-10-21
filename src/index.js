@@ -198,6 +198,10 @@ async function processQualifiedLeads() {
  *  - Enforces 1 DM per scrape run for human pacing
  */
 async function processWtbLeads() {
+  return bhwSession.withLock(async () => _processWtbLeadsInternal());
+}
+
+async function _processWtbLeadsInternal() {
   if (!config.wtb?.enabled) return { outreachCount: 0, dryRun: true };
 
   const wtbLeads = await getWtbLeadsToContact();
