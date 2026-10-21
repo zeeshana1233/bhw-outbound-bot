@@ -51,7 +51,7 @@ async function _scrapeWtbThreadsInternal() {
 
         const titleEl = row.querySelector('.structItem-title a[data-tp-primary], .structItem-title a:last-child');
         const userEl = row.querySelector('.structItem-parts .username, .structItem-cell--main .username');
-        const timeEl = row.querySelector('.structItem-startDate time, time.u-dt');
+        const timeEl = row.querySelector('.structItem-cell--main .structItem-startDate time, .structItem-cell--main time, .structItem-startDate time');
 
         if (!titleEl) return;
 
