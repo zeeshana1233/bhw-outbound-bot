@@ -231,6 +231,26 @@ export async function incrementConversationMessages(conversationId, direction) {
  * Look up the active BHW conversation URL for a lead by their username.
  * Used by Discord /reply command to find the chat link.
  */
+
+/**
+ * Look up a conversation and lead by its BHW conversation URL.
+ */
+export async function getConversationByUrl(convUrl) {
+  if (!convUrl) return null;
+  // Clean off query params like /unread
+  const cleanUrl = convUrl.replace(/\/unread\/?$/, '').replace(/\/page-\d+.*$/, '');
+  const sql = `
+    SELECT c.*, l.poster_username, l.title as lead_title, l.id as lead_row_id
+    FROM conversations c
+    JOIN leads l ON l.id = c.lead_id
+    WHERE c.bhw_conversation_url LIKE $1
+    ORDER BY c.created_at DESC
+    LIMIT 1
+  `;
+  const result = await query(sql, [`%${cleanUrl}%`]);
+  return result.rows[0] || null;
+}
+
 export async function getConversationByUsername(username) {
   if (!username) return null;
   const cleanUser = username.replace(/^@/, '').trim();

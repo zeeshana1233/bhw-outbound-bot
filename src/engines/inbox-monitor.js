@@ -28,6 +28,7 @@ import { handleConversation } from './conversation.js';
 import {
   getLeadByPosterUsername,
   getConversationByLeadId,
+  getConversationByUrl,
   createDM,
   incrementConversationMessages,
   logActivity,
@@ -61,13 +62,16 @@ async function scrapeConversationList(page) {
   const conversations = await page.evaluate(() => {
     const items = [];
     document.querySelectorAll('.structItem--conversation, .p-body-main .structItem').forEach(row => {
-      const titleEl    = row.querySelector('.structItem-title a, a.structItem-title');
-      const usernameEl = row.querySelector('.structItem-parts .username, .structItem-cell--user .username');
+      const titleEl = row.querySelector('.structItem-title a, a.structItem-title');
       if (!titleEl) return;
+
+      // XenForo lists "With: app_pilot, OtherUser" — pick the other user, not ourselves
+      const userEls = Array.from(row.querySelectorAll('.structItem-parts .username, .structItem-cell--user .username'));
+      const otherUserEl = userEls.find(el => el.innerText.trim().toLowerCase() !== 'app_pilot') || userEls[0];
 
       const url      = titleEl.href;
       const subject  = titleEl.innerText.trim();
-      const username = usernameEl ? usernameEl.innerText.trim() : null;
+      const username = otherUserEl ? otherUserEl.innerText.trim() : null;
       const isUnread = row.classList.contains('is-unread') ||
                        row.classList.contains('structItem--unread') ||
                        !!row.querySelector('.is-unread, .structItem-unreadCount');
@@ -163,30 +167,47 @@ export async function checkAndReplyToInbox(opts = {}) {
           const lastMsg = msgs[msgs.length - 1];
 
           if (lastMsg && !lastMsg.isOurs) {
-            logger.info(`  💬 Inbound client message from @${conv.username}: "${lastMsg.text.substring(0, 80)}..."`);
+            // Extract the real client username from the client's actual message or database record
+            // (Never use the XenForo list author when it says app_pilot)
+            const clientMsg = msgs.slice().reverse().find(m => !m.isOurs);
+            let clientUsername = clientMsg?.username;
+            if (!clientUsername || clientUsername.toLowerCase() === 'app_pilot') {
+              clientUsername = lead?.poster_username;
+            }
+            if (!clientUsername) {
+              // Try URL lookup in database
+              const convByUrl = await getConversationByUrl(conv.url).catch(() => null);
+              clientUsername = convByUrl?.poster_username || clientMsg?.username || conv.username;
+            }
+
+            // Refetch lead & conv using the real client username if available
+            const actualLead = clientUsername ? (await getLeadByPosterUsername(clientUsername).catch(() => null)) || lead : lead;
+            const actualConv = actualLead ? (await getConversationByLeadId(actualLead.id).catch(() => null)) || dbConv : dbConv;
+
+            logger.info(`  💬 Inbound client message from @${clientUsername}: "${lastMsg.text.substring(0, 80)}..."`);
 
             // 1. Immediately pause any active follow-ups for this lead/conversation
-            if (lead?.id) await pauseFollowUpsForLead(lead.id, 'client_replied_live').catch(() => {});
-            if (dbConv?.id) await pauseFollowUpsForConversation(dbConv.id, 'client_replied_live').catch(() => {});
+            if (actualLead?.id) await pauseFollowUpsForLead(actualLead.id, 'client_replied_live').catch(() => {});
+            if (actualConv?.id) await pauseFollowUpsForConversation(actualConv.id, 'client_replied_live').catch(() => {});
 
             // 2. Record inbound message in DB
-            if (dbConv?.id) {
-              await incrementConversationMessages(dbConv.id, 'inbound').catch(() => {});
+            if (actualConv?.id) {
+              await incrementConversationMessages(actualConv.id, 'inbound').catch(() => {});
               await createDM({
-                leadId: lead?.id || null,
-                conversationId: dbConv.id,
+                leadId: actualLead?.id || null,
+                conversationId: actualConv.id,
                 messageType: 'reply',
                 direction: 'inbound',
-                subject: conv.subject || 'Direct Message',
+                subject: actualLead?.title || conv.subject || 'Direct Message',
                 body: lastMsg.text,
                 sentAt: new Date(),
               }).catch(() => {});
             }
 
-            // 3. Dispatch alert card to #bhw-client-inbox
+            // 3. Dispatch alert card to #bhw-client-inbox with real client username
             await alerts.sendClientReplyAlert({
-              username: conv.username,
-              leadTitle: lead?.title || conv.subject,
+              username: clientUsername,
+              leadTitle: actualLead?.title || conv.subject,
               convUrl: conv.url,
               clientMessage: lastMsg.text,
             }).catch(err => logger.error(`Failed to send client reply alert: ${err.message}`));
