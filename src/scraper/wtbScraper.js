@@ -1,3 +1,10 @@
+function isToday(rawDate) {
+  if (!rawDate) return false;
+  const d = new Date(rawDate);
+  if (isNaN(d.getTime())) return false;
+  return d.toDateString() === new Date().toDateString();
+}
+
 import logger from '../utils/logger.js';
 import { randomDelay, sleep, extractThreadId, getThreadAgeCategory } from '../utils/helpers.js';
 import bhwSession from '../utils/bhwSession.js';
@@ -79,9 +86,9 @@ async function _scrapeWtbThreadsInternal() {
 
       // Check post age (Today-only rule)
       const ageCategory = getThreadAgeCategory(t.postDate);
-      const isToday = ageCategory === 'fresh';
+      const isPostedToday = isToday(t.postDate);
 
-      if (config.wtb?.todayOnly && !isToday) {
+      if (config.wtb?.todayOnly && !isPostedToday) {
         continue; // skip old posts
       }
 
