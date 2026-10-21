@@ -782,7 +782,7 @@ export async function getDailyActionCounts() {
   const sql = `
     SELECT
       (SELECT COUNT(*) FROM leads WHERE commented    = true AND DATE(commented_at)  = $1) AS comments_today,
-      (SELECT COUNT(*) FROM leads WHERE dm_sent      = true AND DATE(dm_sent_at)    = $1) AS dms_today
+      (SELECT COUNT(*) FROM leads WHERE dm_sent      = true AND DATE(dm_sent_at)    = $1 AND (tags IS NULL OR NOT ('wtb' = ANY(tags)))) AS dms_today
   `;
   const result = await query(sql, [today]);
   const row = result.rows[0];
