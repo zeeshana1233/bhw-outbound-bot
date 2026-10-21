@@ -591,4 +591,5 @@ export default {
   sendNicheScoutAlert,
   sendNicheScoutDailyReport,
   sendClientReplyAlert,
+  sendWtbOutreachReport,
 };
