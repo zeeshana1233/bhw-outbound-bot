@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import logger from './utils/logger.js';
 import { sleep, randomDelay, shouldSendDM, isActiveHours } from './utils/helpers.js';
 import { initDatabase } from './database/init.js';
-import { getQualifiedLeadsToContact, getWtbLeadsToContact, getDailyStats, getDailyActionCounts, getNicheScoutDayStats, getNicheScoutWeekStats, getNicheScoutSkippedPosts } from './database/queries.js';
+import { getQualifiedLeadsToContact, getWtbLeadsToContact, getDailyStats, getDailyActionCounts, getNicheScoutDayStats, getNicheScoutWeekStats, getNicheScoutSkippedPosts, getNicheScoutFitPostsToday } from './database/queries.js';
 import { BHWScraper } from './scraper/index.js';
 import { generateAndPostComment } from './engines/comment.js';
 import { config } from './config/config.js';
@@ -458,6 +458,16 @@ function scheduleDailyReport() {
     return next - now;
   };
 
+  // Pakistan Time (PKT = UTC+5)
+  // 10:00 PM PKT = 17:00 UTC | 02:00 AM PKT = 21:00 UTC
+  const msUntilUtcHour = (utcHour) => {
+    const now  = new Date();
+    const next = new Date(now);
+    next.setUTCHours(utcHour, 0, 0, 0);
+    if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+    return next - now;
+  };
+
   const fireMorningReport = async () => {
     try {
       logger.info('📊  Generating daily report…');
@@ -477,33 +487,57 @@ function scheduleDailyReport() {
     setTimeout(fireMorningReport, msUntilHour(9));
   };
 
-  /** End-of-day Niche Scout: niche counts + list of skips (missed / no niche match). */
+  /** 10:00 PM PKT (17:00 UTC): Client demand summary + direct opportunities */
+  const fireNicheScoutDemandReport = async () => {
+    try {
+      if (!config.nicheScout?.enabled) {
+        setTimeout(fireNicheScoutDemandReport, msUntilUtcHour(17));
+        return;
+      }
+      logger.info('📊  Generating Niche Scout 10 PM PKT Demand Report…');
+      const [today, week, fitPosts] = await Promise.all([
+        getNicheScoutDayStats(),
+        getNicheScoutWeekStats(7),
+        getNicheScoutFitPostsToday(5),
+      ]);
+      await alerts.sendNicheScoutDemandReport({ today, week, fitPosts });
+      logger.info(`📊  Niche Scout 10 PM PKT report sent (demand today: ${(today.fit || 0) + (today.maybe || 0)}, direct opps: ${fitPosts.length})`);
+    } catch (err) {
+      logger.error('Niche Scout 10 PM PKT report failed:', err.message);
+    }
+    setTimeout(fireNicheScoutDemandReport, msUntilUtcHour(17));
+  };
+
+  /** 02:00 AM PKT (21:00 UTC): End-of-day summary + list of missed/skipped threads */
   const fireNicheScoutEodReport = async () => {
     try {
       if (!config.nicheScout?.enabled) {
-        setTimeout(fireNicheScoutEodReport, msUntilHour(23));
+        setTimeout(fireNicheScoutEodReport, msUntilUtcHour(21));
         return;
       }
-      logger.info('📊  Generating Niche Scout end-of-day report…');
+      logger.info('📊  Generating Niche Scout 2 AM PKT End-of-Day Report…');
       const [today, week, skipped] = await Promise.all([
         getNicheScoutDayStats(),
         getNicheScoutWeekStats(7),
         getNicheScoutSkippedPosts(new Date(), 100),
       ]);
       await alerts.sendNicheScoutDailyReport({ today, week, skipped });
-      logger.info(`📊  Niche Scout EOD sent (matched today: ${(today.fit || 0) + (today.maybe || 0)}, skips: ${skipped.length})`);
+      logger.info(`📊  Niche Scout 2 AM PKT EOD sent (matched: ${(today.fit || 0) + (today.maybe || 0)}, skips: ${skipped.length})`);
     } catch (err) {
-      logger.error('Niche Scout EOD report failed:', err.message);
+      logger.error('Niche Scout 2 AM PKT EOD report failed:', err.message);
     }
-    setTimeout(fireNicheScoutEodReport, msUntilHour(23));
+    setTimeout(fireNicheScoutEodReport, msUntilUtcHour(21));
   };
 
   const delay9 = msUntilHour(9);
-  const delay23 = msUntilHour(23);
+  const delay22 = msUntilUtcHour(17); // 10 PM PKT
+  const delay02 = msUntilUtcHour(21); // 2 AM PKT
   logger.info(`📊  Daily report scheduled — fires in ${Math.round(delay9 / 36e5 * 10) / 10}h (09:00 every day)`);
-  logger.info(`📊  Niche Scout EOD scheduled — fires in ${Math.round(delay23 / 36e5 * 10) / 10}h (23:00 every day)`);
+  logger.info(`📊  Niche Scout 10 PM PKT report scheduled — fires in ${Math.round(delay22 / 36e5 * 10) / 10}h (10:00 PM PKT every day)`);
+  logger.info(`📊  Niche Scout 2 AM PKT EOD scheduled — fires in ${Math.round(delay02 / 36e5 * 10) / 10}h (02:00 AM PKT every day)`);
   setTimeout(fireMorningReport, delay9);
-  setTimeout(fireNicheScoutEodReport, delay23);
+  setTimeout(fireNicheScoutDemandReport, delay22);
+  setTimeout(fireNicheScoutEodReport, delay02);
 }
 
 // ── Heartbeat ────────────────────────────────────────────────────────────────

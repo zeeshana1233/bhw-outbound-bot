@@ -1402,3 +1402,20 @@ export async function getNicheScoutSkippedPosts(date = new Date(), limit = 100) 
   const { rows } = await query(sql, [day, limit]);
   return rows;
 }
+
+/**
+ * Fetch today's top direct fit opportunities for the 10 PM PKR report.
+ */
+export async function getNicheScoutFitPostsToday(limit = 10) {
+  const day = new Date().toISOString().slice(0, 10);
+  const sql = `
+    SELECT title, thread_url, poster_username, niche, comment_angle
+    FROM niche_scout_posts
+    WHERE DATE(created_at) = $1
+      AND LOWER(COALESCE(verdict, '')) = 'fit'
+    ORDER BY created_at DESC
+    LIMIT $2
+  `;
+  const { rows } = await query(sql, [day, limit]);
+  return rows;
+}

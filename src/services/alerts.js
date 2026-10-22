@@ -517,6 +517,80 @@ export async function sendNicheScoutAlert({
  * @param {object} opts.week    - from getNicheScoutWeekStats()
  * @param {Array}  opts.skipped - from getNicheScoutSkippedPosts()
  */
+/**
+ * 10:00 PM PKT Intelligence Report: Client demand summary + direct opportunities.
+ */
+export async function sendNicheScoutDemandReport({ today = {}, week = {}, fitPosts = [] } = {}) {
+  const channelId = config.discord.nicheScoutChannelId;
+  if (!channelId) {
+    logger.warn('[NicheScout] NICHE_SCOUT_CHANNEL_ID not set — demand report skipped.');
+    return { skipped: true };
+  }
+
+  const dateLabel = today.date || new Date().toLocaleDateString('en-GB');
+
+  const formatNicheDemand = (byNiche = {}) => {
+    const niceLabels = {
+      scraping: '🕷️ Web Scraping / Data Extraction',
+      automation: '🤖 Automation / Bot Development',
+      trading: '📈 Trading Bots / MT4 / PineScript',
+      tiktok_shop: '🛍️ TikTok Shop & E-commerce',
+    };
+    const keys = Object.keys(byNiche).filter(k => k !== 'none').sort();
+    if (keys.length === 0) return '  • None identified yet today';
+    return keys.map((k) => {
+      const n = byNiche[k];
+      const count = (n.fit || 0) + (n.maybe || 0);
+      const label = niceLabels[k] || (`🏷️ ${k.charAt(0).toUpperCase() + k.slice(1)}`);
+      return `  • **${label}:** ${count} people`;
+    }).join('\n');
+  };
+
+  const directOppLines = (fitPosts || []).slice(0, 5).map((p, i) => {
+    return [
+      `${i + 1}. **"${p.title || '(no title)'}"**`,
+      `   👤 **Poster:** @${p.poster_username || 'unknown'}`,
+      `   🏷️ **Service:** ${p.niche || 'General'}`,
+      `   💡 **Comment Angle:** ${p.comment_angle || 'Offer relevant technical assistance'}`,
+      `   🔗 ${p.thread_url}`,
+    ].join('\n');
+  });
+
+  const totalTodayDemand = (today.fit || 0) + (today.maybe || 0);
+  const totalWeekDemand = (week.fit || 0) + (week.maybe || 0);
+
+  const text = [
+    `📊 **Niche Scout Daily Intelligence Report — ${dateLabel}**`,
+    '',
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '🎯 **TODAY\'S CLIENT DEMAND (People Asking for Services)**',
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    `👥 **Total Service Requests Today:** ${totalTodayDemand} people`,
+    formatNicheDemand(today.byNiche),
+    '',
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '📅 **WHOLE WEEK DEMAND (Last 7 Days)**',
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    `👥 **Total Service Requests This Week:** ${totalWeekDemand} people`,
+    formatNicheDemand(week.byNiche),
+    '',
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    `📌 **DIRECT OPPORTUNITIES (Fit Matches Today — ${directOppLines.length})**`,
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    directOppLines.length ? directOppLines.join('\n\n') : '  • None for today yet.',
+    '',
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '⏰ *Next Intelligence Report scheduled for tomorrow at 10:00 PM (PKR)*',
+  ].join('\n');
+
+  logger.info('[NicheScout] Sending 10 PM PKR niche demand report…');
+  return sendToChannelById(channelId, text);
+}
+
+/**
+ * 2:00 AM PKT End-of-day Niche Scout report → niche scout Discord channel.
+ * Includes today + week niche job counts, plus list of skips (niche miss).
+ */
 export async function sendNicheScoutDailyReport({ today = {}, week = {}, skipped = [] } = {}) {
   const channelId = config.discord.nicheScoutChannelId;
   if (!channelId) {
@@ -524,8 +598,7 @@ export async function sendNicheScoutDailyReport({ today = {}, week = {}, skipped
     return { skipped: true };
   }
 
-  const dateLabel = today.date
-    || new Date().toLocaleDateString('en-GB');
+  const dateLabel = today.date || new Date().toLocaleDateString('en-GB');
 
   const formatByNiche = (byNiche = {}) => {
     const keys = Object.keys(byNiche).sort((a, b) => {
@@ -551,7 +624,7 @@ export async function sendNicheScoutDailyReport({ today = {}, week = {}, skipped
     : '';
 
   const text = [
-    `📊 **Niche Scout Daily Report — ${dateLabel}**`,
+    `📊 **Niche Scout End-of-Day Report — ${dateLabel}**`,
     '',
     `**Today**`,
     `Total classified: ${today.total || 0}`,
@@ -572,7 +645,7 @@ export async function sendNicheScoutDailyReport({ today = {}, week = {}, skipped
     moreSkip,
   ].join('\n');
 
-  logger.info('[NicheScout] Sending end-of-day niche report…');
+  logger.info('[NicheScout] Sending 2 AM PKT end-of-day niche report…');
   return sendToChannelById(channelId, text);
 }
 
@@ -590,6 +663,7 @@ export default {
   sendPipelineCJobAlert,
   sendNicheScoutAlert,
   sendNicheScoutDailyReport,
+  sendNicheScoutDemandReport,
   sendClientReplyAlert,
   sendWtbOutreachReport,
 };
