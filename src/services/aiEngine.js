@@ -211,70 +211,62 @@ async function _logAICall(data) {
  *   'skip'  → < 0.40 — discard
  */
 export async function qualifyLead(title, description) {
-  const functionInstructions = `Qualify the job post below for Zeeshan Ahmad.
-
-CONTEXT & PHILOSOPHY:
-Zeeshan handles any kind of professional freelance work (software, design, video, writing, marketing, SEO, data, admin, automation, etc.).
-Your goal is to qualify ANY genuine hiring request where an individual or business is looking to hire a freelancer or agency to get work done.
+  const functionInstructions = `Qualify the job post below for Bitbash.
 
 Return ONLY valid JSON — no explanation, no code fences:
 {
   "qualified": true | false,
-  "is_development": true | false,
   "confidence": 0.00 to 1.00,
   "reason": "one concise sentence explaining why",
-  "pitch_angle": "if qualified: how Zeeshan should position himself for this job; else empty string"
+  "pitch_angle": "if qualified: how Bitbash should position itself for this job; else empty string"
 }
-
-DEVELOPMENT CATEGORY RULE:
-  "is_development": true — if the job involves coding, scripts, bots, web scrapers, APIs, web/mobile development (WordPress, Shopify, React, Node, Python, PHP, etc.), or technical software automation.
-  "is_development": false — if the job is for SEO, backlinks, PBNs, content writing, graphic design, video editing, virtual assistance, data entry, social media, or other non-coding services.
 
 EMOJI / SYMBOL RULE — READ THIS FIRST:
   BHW posts frequently use ❌ and ✅ as DECORATIVE BULLET POINTS, not as true negatives vs positives.
   Example: a post may say "❌ You know how to build bots" — the ❌ here means "you should have this skill", NOT "we don't want this".
   ALWAYS read the full context. If a post uses ❌ for a list of required skills/capabilities and ✅ for what they offer in return, treat them as neutral bullets — not as negatives/positives.
+  Do NOT let ❌ symbols make you score a post down if the surrounding text makes clear they are requirement bullets.
 
 Scoring guide:
-  0.85–1.00 — clear, active job post looking to hire someone for any legitimate freelance service (software, web, bots, scrapers, SEO, backlinks, design, video, content, marketing, data entry, virtual assistance, etc.)
-  0.70–0.84 — genuine hiring request with slightly brief or informal description
-  0.40–0.69 — likely hiring, but scope, budget, or requirements are somewhat vague
-  0.00–0.39 — DO NOT QUALIFY (see rules below)
+  0.90–1.00 — explicitly asks for something Bitbash has shipped before (e.g. Instagram bot, scraper, React SaaS, dating app automation)
+  0.70–0.89 — clearly in niche, minor ambiguity about scope
+  0.40–0.69 — probably in niche but post is vague, unclear budget, or has non-niche elements mixed in
+  0.10–0.39 — partially technical but mostly outside niche
+  0.00–0.09 — completely outside niche (SEO link-building, GRAPHIC design / logos / thumbnails, copywriting, PR placements)
 
-WHAT TO QUALIFY (confidence >= 0.70):
-  ✅ Software, bot, scraping, automation, AI, or web/mobile development
-  ✅ WordPress, Shopify, e-commerce, web design, UI/UX
-  ✅ SEO, link building, PBNs, guest posts, backlink packages, indexing
-  ✅ Graphic design, video editing, thumbnails, logos, creative work
-  ✅ Writing, copywriting, translation, content creation, social media management
-  ✅ Virtual assistants, lead generation, data entry, customer support
+IMPORTANT DISTINCTIONS:
+  ✅ QUALIFY these — they involve building/coding:
+     • WordPress design / WP theme / WP site build — this is development work (custom WordPress themes, WooCommerce, page builders like Elementor/Divi WITH customisation)
+     • Website design — UI/frontend development, React, HTML/CSS, landing pages built with code
+     • Minimal website / portfolio site / music website — web development work
+     • Dating app automation — swiping bots, verification bypass, account management at scale for Tinder/Bumble/Hinge/etc. — this is custom bot/automation development
+     • Any social platform automation (Instagram, Twitter, Reddit, TikTok, Snapchat, or dating apps) — Bitbash builds these
+  ❌ DO NOT qualify these:
+     • Graphic design, logo design, banner design, motion graphics, thumbnails (Adobe/Canva work, not code)
+     • SEO link-building, guest posts, backlinks
+     • Content writing, copywriting, PR
 
-DO NOT QUALIFY (return qualified: false, confidence < 0.40):
-  ❌ Sellers offering services (e.g., "[WTS]", "[SELLING]", people advertising their own services instead of hiring)
-  ❌ Obvious spam, illegal blackhat exploits (carding, hacking, stealing accounts), or forum rule violations
-  ❌ Forum announcements, meta discussions, or general discussion threads that are not hiring anyone
-
-Return qualified:true whenever confidence >= 0.40.
+Return qualified:true only when confidence ≥ 0.40.
 
 Few-shot examples:
 
-TITLE: "Looking to buy footer links from UK domains"
-→ {"qualified":true,"confidence":0.90,"reason":"Active hiring request for SEO footer links","pitch_angle":"Highlight network of domains and quality backlink placement experience"}
-
-TITLE: "Need a Website Developer & Seo Freelancer"
-→ {"qualified":true,"confidence":0.95,"reason":"Active hiring request for web development and SEO","pitch_angle":"Highlight full-stack website building and ranking track record"}
-
-TITLE: "Looking to hire Instagram UGC creators for peptide"
-→ {"qualified":true,"confidence":0.88,"reason":"Active hiring request for content creators / social media marketing","pitch_angle":"Highlight social media marketing and creative creator outreach experience"}
-
 TITLE: "Need Telegram bot that scrapes group members and auto-DMs them"
-→ {"qualified":true,"confidence":0.95,"reason":"Active hiring request for Telegram automation and scraping","pitch_angle":"Highlight Telegram bot and member scraping experience"}
+→ {"qualified":true,"confidence":0.95,"reason":"Direct Telegram automation — core Bitbash capability","pitch_angle":"highlight Telegram bot experience and explain the member-scraping + DM flow we have built before"}
+
+TITLE: "Dating App Automation expert needed"
+→ {"qualified":true,"confidence":0.92,"reason":"Dating app automation (swiping, account management, verification bypass at scale) — directly maps to Bitbash's social automation and bot development capabilities","pitch_angle":"position Bitbash as experts in social/dating app automation bots, highlight experience with account farming, anti-detection, and scaling bots across platforms"}
+
+TITLE: "Hiring someone to make WP design"
+→ {"qualified":true,"confidence":0.82,"reason":"WordPress site design/build — Bitbash delivers custom WP themes and WooCommerce builds","pitch_angle":"showcase WordPress theme development and WooCommerce experience, offer portfolio of WP builds"}
+
+TITLE: "Website Designer (Minimal / Music Project)"
+→ {"qualified":true,"confidence":0.78,"reason":"Frontend website design for a music project — Bitbash builds minimal, clean React/HTML sites and landing pages","pitch_angle":"pitch minimal React or Next.js site with clean UI, mention experience with creative/music brand aesthetics"}
+
+TITLE: "Looking for a Forbes contributor to write a press release and get it published"
+→ {"qualified":false,"confidence":0.02,"reason":"PR/content placement — not software development","pitch_angle":""}
 
 TITLE: "Need logo designed for my brand, PNG and SVG files"
-→ {"qualified":true,"confidence":0.90,"reason":"Active hiring request for graphic design and branding","pitch_angle":"Highlight branding and visual design portfolio"}
-
-TITLE: "[SELLING] High DA backlinks and guest posts for cheap"
-→ {"qualified":false,"confidence":0.05,"reason":"Seller offering services rather than an employer hiring a freelancer","pitch_angle":""}`;
+→ {"qualified":false,"confidence":0.03,"reason":"Pure graphic design / logo work — not code or web development","pitch_angle":""}`;
 
   const systemPrompt = buildSystemPrompt(functionInstructions);
 
@@ -283,7 +275,7 @@ TITLE: "[SELLING] High DA backlinks and guest posts for cheap"
 Job Description:
 ${description}
 
-Evaluate this post:`;
+Evaluate this post for Bitbash:`;
 
   try {
     const raw    = await callAI(systemPrompt, userPrompt, {
@@ -303,7 +295,7 @@ Evaluate this post:`;
 
     return {
       qualified:      result.qualified === true && confidence >= 0.40,
-      is_development: result.is_development === true,
+      is_development: result.is_development !== false,
       confidence,
       tier,
       reason:         result.reason      || 'No reason provided',
